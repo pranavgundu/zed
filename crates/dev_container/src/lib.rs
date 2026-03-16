@@ -27,6 +27,7 @@ use ui::Tooltip;
 use ui::h_flex;
 use ui::rems_from_px;
 use ui::v_flex;
+use util::shell::Shell;
 
 use gpui::{Action, DismissEvent, EventEmitter, FocusHandle, Focusable, RenderOnce, WeakEntity};
 use serde::Deserialize;
@@ -134,6 +135,16 @@ impl DevContainerContext {
             http_client,
             environment: environment.clone(),
         })
+    }
+
+    pub async fn environment(&self, cx: &mut impl AppContext) -> HashMap<String, String> {
+        self.environment
+            .update(cx, |this, cx| {
+                this.local_directory_environment(&Shell::System, self.project_directory.clone(), cx)
+            })
+            .await
+            .map(|env| env.into_iter().collect::<std::collections::HashMap<_, _>>())
+            .unwrap_or_default()
     }
 }
 
@@ -1558,9 +1569,11 @@ fn dispatch_apply_templates(
             return;
         };
 
+        let environment = context.environment(cx).await;
+
         {
             if check_for_existing
-                && read_default_devcontainer_configuration(&context)
+                && read_default_devcontainer_configuration(&context, environment)
                     .await
                     .is_ok()
             {

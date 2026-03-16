@@ -138,17 +138,16 @@ impl Display for DevContainerError {
 
 pub(crate) async fn read_default_devcontainer_configuration(
     cx: &DevContainerContext,
+    environment: HashMap<String, String>,
 ) -> Result<DevContainer, DevContainerError> {
     let default_config = DevContainerConfig::default_config();
 
-    read_devcontainer_configuration(
-        default_config,
-        Arc::new(cx.project_directory.clone().as_ref()),
-    )
-    .map_err(|e| {
-        log::error!("Default configuration not found: {:?}", e);
-        DevContainerError::DevContainerNotFound
-    })
+    read_devcontainer_configuration(default_config, cx, environment)
+        .await
+        .map_err(|e| {
+            log::error!("Default configuration not found: {:?}", e);
+            DevContainerError::DevContainerNotFound
+        })
 }
 
 // pub(crate) async fn apply_dev_container_template(
@@ -302,9 +301,8 @@ pub async fn start_dev_container_with_config(
     };
 
     match spawn_dev_container(
-        context.http_client,
-        context.fs,
-        environment,
+        &context,
+        environment.clone(),
         actual_config.clone(),
         Arc::new(context.project_directory.clone().as_ref()),
     )
@@ -316,15 +314,13 @@ pub async fn start_dev_container_with_config(
             remote_user,
             ..
         }) => {
-            let project_name = match read_devcontainer_configuration(
-                actual_config,
-                Arc::new(context.project_directory.clone().as_ref()),
-            ) {
-                Ok(DevContainer {
-                    name: Some(name), ..
-                }) => name,
-                _ => get_backup_project_name(&remote_workspace_folder, &container_id),
-            };
+            let project_name =
+                match read_devcontainer_configuration(actual_config, &context, environment).await {
+                    Ok(DevContainer {
+                        name: Some(name), ..
+                    }) => name,
+                    _ => get_backup_project_name(&remote_workspace_folder, &container_id),
+                };
 
             let connection = DevContainerConnection {
                 name: project_name,

@@ -14,7 +14,7 @@ use smol::process::Command;
 use util::ResultExt;
 
 use crate::{
-    DevContainerConfig, DevContainerErrorV2,
+    DevContainerConfig, DevContainerContext, DevContainerErrorV2,
     command_json::evaluate_json_command,
     devcontainer_api::DevContainerUp,
     docker::{DockerInspect, DockerPs, docker_cli, inspect_image},
@@ -50,7 +50,7 @@ use crate::{
 // So, when remoteUser is specified here, it seems that this is _not_ propagated to the labels in the docker container
 // Which is interesting. I guess the read-configuration API just need to talk to the file, not the docker itself
 // And the configuration doesn't make any promises about creating the user. Still weird though
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DevContainer {
     pub(crate) image: Option<String>,
@@ -100,9 +100,15 @@ pub(crate) struct DevContainer {
     host_requirements: Option<HostRequirements>,
 }
 
+enum ConfigStatus {
+    Deserialized(DevContainer),
+    VariableParsed(DevContainer),
+}
+
 struct DevContainerManifest {
     fs: Arc<dyn Fs>,
-    config: DevContainer,
+    raw_config: String,
+    config: ConfigStatus,
     local_environment: HashMap<String, String>,
     local_project_directory: PathBuf,
     config_directory: PathBuf,
@@ -144,7 +150,8 @@ impl DevContainerManifest {
 
         Ok(Self {
             fs,
-            config: devcontainer,
+            raw_config: devcontainer_contents,
+            config: ConfigStatus::Deserialized(devcontainer),
             local_project_directory: local_project_path.to_path_buf(),
             local_environment: environment,
             config_directory: devcontainer_directory.to_path_buf(),
@@ -189,12 +196,13 @@ impl DevContainerManifest {
     // --> (done) ${containerWorkspaceFolderBasename} -- the container directory name
     // --> (done) ${devcontainerId} -- the hash of what we've been calling "labels" up until now, probably shortened
     //             - looks like cli pads by 52 chars
-    fn replace_nonremote_vars(&self, contents: &str) -> Result<String, DevContainerErrorV2> {
-        let mut replaced_content = contents
+    fn parse_nonremote_vars(&mut self) -> Result<(), DevContainerErrorV2> {
+        let mut replaced_content = self
+            .raw_config
             .replace("${devcontainerId}", &self.devcontainer_id())
             .replace(
                 "${containerWorkspaceFolderBasename}",
-                &self.remote_workspace_base_name()?,
+                &self.remote_workspace_base_name().unwrap_or_default(),
             )
             .replace(
                 "${localWorkspaceFolderBasename}",
@@ -202,17 +210,29 @@ impl DevContainerManifest {
             )
             .replace(
                 "${containerWorkspaceFolder}",
-                &self.remote_workspace_folder()?,
+                &self
+                    .remote_workspace_folder()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
             )
             .replace("${localWorkspaceFolder}", &self.local_workspace_folder());
         for (k, v) in &self.local_environment {
             let find = format!("${{localEnv:{k}}}");
             replaced_content = replaced_content.replace(&find, &v);
         }
-        Ok(replaced_content)
+
+        let parsed_config = deserialize_devcontainer_json(&replaced_content)?;
+
+        self.config = ConfigStatus::VariableParsed(parsed_config);
+
+        Ok(())
     }
 
     // Replaces the remote_env vars in devcontainer.json
+    // Ok, so this only applies at the time of docker run. We can essentially inspect the container
+    // that was built, pull out the env, and combine it with whatever is predefined in the json. Then this will feed
+    // back into docker run with `-e ... -e...` etc. Therefore this will take whatever the data
+    // type of the docker inspect Env is, and spit out a hashmap
     fn _replace_remote_env_vars(&mut self) {}
 
     fn validate_config(&self) -> Result<(), DevContainerErrorV2> {
@@ -223,12 +243,19 @@ impl DevContainerManifest {
         self.config_directory.join(&self.file_name).clone()
     }
 
+    fn dev_container(&self) -> &DevContainer {
+        match &self.config {
+            ConfigStatus::Deserialized(dev_container) => dev_container,
+            ConfigStatus::VariableParsed(dev_container) => dev_container,
+        }
+    }
+
     // Ugh don't let this out. Needs simplification
     async fn dockerfile_location(&self) -> Option<PathBuf> {
-        match self.config.build_type() {
+        let dev_container = self.dev_container();
+        match dev_container.build_type() {
             DevContainerBuildType::Image => None,
-            DevContainerBuildType::Dockerfile => self
-                .config
+            DevContainerBuildType::Dockerfile => dev_container
                 .build
                 .as_ref()
                 .map(|build| self.config_directory.join(&build.dockerfile)),
@@ -251,7 +278,7 @@ impl DevContainerManifest {
 
     fn generate_features_image_tag(&self, dockerfile_build_path: String) -> String {
         let mut hasher = DefaultHasher::new();
-        let prefix = match &self.config.name {
+        let prefix = match &self.dev_container().name {
             Some(name) => &safe_id_lower(name),
             None => "zed-dc",
         };
@@ -267,11 +294,22 @@ impl DevContainerManifest {
         &mut self,
         http_client: &Arc<dyn HttpClient>,
     ) -> Result<(), DevContainerErrorV2> {
+        let dev_container = match &self.config {
+            ConfigStatus::Deserialized(_) => {
+                log::error!(
+                    "Dev container has not yet been parsed for variable expansion. Cannot yet download resources"
+                );
+                return Err(DevContainerErrorV2::UnmappedError);
+            }
+            ConfigStatus::VariableParsed(dev_container) => dev_container,
+        };
         let root_image_tag = get_base_image_from_config(self).await?;
 
         let root_image = inspect_image(&root_image_tag).await?;
 
-        if self.config.build_type() == DevContainerBuildType::Image && !self.config.has_features() {
+        if dev_container.build_type() == DevContainerBuildType::Image
+            && !dev_container.has_features()
+        {
             log::info!("No resources to download. Proceeding with just the image");
             return Ok(());
         }
@@ -308,11 +346,11 @@ impl DevContainerManifest {
             dockerfile_path,
             features_content_dir,
             empty_context_dir,
-            build_image: self.config.image.clone(),
+            build_image: dev_container.image.clone(),
             image_tag,
         };
 
-        let features = match &self.config.features {
+        let features = match &dev_container.features {
             Some(features) => features,
             None => &HashMap::new(),
         };
@@ -338,7 +376,7 @@ impl DevContainerManifest {
             })?;
 
         let ordered_features =
-            resolve_feature_order(features, &self.config.override_feature_install_order);
+            resolve_feature_order(features, &dev_container.override_feature_install_order);
 
         let mut feature_layers = String::new();
 
@@ -467,8 +505,20 @@ impl DevContainerManifest {
     }
 
     // TODO move entrypoint into this
-    fn build_merged_resources(&self, base_image: DockerInspect) -> DockerBuildResources {
-        let mut mounts = self.config.mounts.clone().unwrap_or(Vec::new());
+    fn build_merged_resources(
+        &self,
+        base_image: DockerInspect,
+    ) -> Result<DockerBuildResources, DevContainerErrorV2> {
+        let dev_container = match &self.config {
+            ConfigStatus::Deserialized(_) => {
+                log::error!(
+                    "Dev container has not yet been parsed for variable expansion. Cannot yet merge resources"
+                );
+                return Err(DevContainerErrorV2::UnmappedError);
+            }
+            ConfigStatus::VariableParsed(dev_container) => dev_container,
+        };
+        let mut mounts = dev_container.mounts.clone().unwrap_or(Vec::new());
 
         let mut feature_mounts = self
             .features
@@ -478,8 +528,8 @@ impl DevContainerManifest {
 
         mounts.append(&mut feature_mounts);
 
-        let privileged =
-            self.config.privileged.unwrap_or(false) || self.features.iter().any(|f| f.privileged());
+        let privileged = dev_container.privileged.unwrap_or(false)
+            || self.features.iter().any(|f| f.privileged());
 
         let entrypoints = self
             .features
@@ -487,20 +537,22 @@ impl DevContainerManifest {
             .filter_map(|f| f.entrypoint())
             .collect();
 
-        DockerBuildResources {
+        Ok(DockerBuildResources {
             image: base_image,
             additional_mounts: mounts,
             privileged,
             entrypoints,
-        }
+        })
     }
 
     async fn build_resources(&self) -> Result<DevContainerBuildResources, DevContainerErrorV2> {
-        match self.config.build_type() {
+        // TODO this probably shouldn't proceed until parsed either
+        let dev_container = self.dev_container();
+        match dev_container.build_type() {
             DevContainerBuildType::Image | DevContainerBuildType::Dockerfile => {
                 let built_docker_image = self.build_docker_image().await?;
 
-                let resources = self.build_merged_resources(built_docker_image);
+                let resources = self.build_merged_resources(built_docker_image)?;
                 Ok(DevContainerBuildResources::Docker(resources))
             }
             DevContainerBuildType::DockerCompose => {
@@ -549,7 +601,9 @@ impl DevContainerManifest {
 
     // TODO this could be done earlier in the process
     async fn docker_compose_manifest(&self) -> Result<DockerComposeResources, DevContainerErrorV2> {
-        let Some(docker_compose_files) = self.config.docker_compose_file.clone() else {
+        // TODO this probably shouldn't proceed until parsed either
+        let dev_container = self.dev_container();
+        let Some(docker_compose_files) = dev_container.docker_compose_file.clone() else {
             return Err(DevContainerErrorV2::UnmappedError);
         };
         let docker_compose_full_paths = docker_compose_files
@@ -574,6 +628,9 @@ impl DevContainerManifest {
     async fn build_and_extend_compose_files(
         &self,
     ) -> Result<DockerComposeResources, DevContainerErrorV2> {
+        // TODO this probably shouldn't proceed until parsed either
+        let dev_container = self.dev_container();
+
         let Some(features_build_info) = &self.features_build_info else {
             log::error!(
                 "Cannot build and extend compose files: features build info is not yet constructed"
@@ -585,8 +642,7 @@ impl DevContainerManifest {
         let (main_service_name, main_service) =
             find_primary_service(&docker_compose_resources, self)?;
         let built_service_image = if let Some(image) = &main_service.image {
-            if self
-                .config
+            if dev_container
                 .features
                 .as_ref()
                 .is_none_or(|features| features.is_empty())
@@ -724,7 +780,7 @@ impl DevContainerManifest {
             return Err(DevContainerErrorV2::UnmappedError);
         };
 
-        let resources = self.build_merged_resources(built_service_image);
+        let resources = self.build_merged_resources(built_service_image)?;
 
         let runtime_override_file = self
             .write_runtime_override_file(&main_service_name, resources)
@@ -865,18 +921,20 @@ impl DevContainerManifest {
     }
 
     async fn build_docker_image(&self) -> Result<DockerInspect, DevContainerErrorV2> {
+        // TODO this probably shouldn't proceed until parsed either
+        let dev_container = self.dev_container();
+
         let Some(features_build_info) = &self.features_build_info else {
             log::error!("Cannot build docker image; features build info has not been constructed");
             return Err(DevContainerErrorV2::UnmappedError);
         };
-        match self.config.build_type() {
+        match dev_container.build_type() {
             DevContainerBuildType::Image => {
-                let Some(image_tag) = &self.config.image else {
+                let Some(image_tag) = &dev_container.image else {
                     return Err(DevContainerErrorV2::UnmappedError);
                 };
                 let base_image = inspect_image(image_tag).await?;
-                if self
-                    .config
+                if dev_container
                     .features
                     .as_ref()
                     .is_none_or(|features| features.is_empty())
@@ -912,6 +970,9 @@ impl DevContainerManifest {
     }
 
     fn create_docker_build(&self) -> Result<Command, DevContainerErrorV2> {
+        // TODO this probably shouldn't proceed until parsed either
+        let dev_container = self.dev_container();
+
         let Some(features_build_info) = &self.features_build_info else {
             log::error!(
                 "Cannot create docker build command; features build info has not been constructed"
@@ -964,7 +1025,7 @@ impl DevContainerManifest {
             "_DEV_CONTAINERS_FEATURE_CONTENT_SOURCE=dev_container_feature_content_temp",
         ]);
 
-        if let Some(args) = self.config.build.as_ref().and_then(|b| b.args.as_ref()) {
+        if let Some(args) = dev_container.build.as_ref().and_then(|b| b.args.as_ref()) {
             for (key, value) in args {
                 command.args(["--build-arg", &format!("{}={}", key, value)]);
             }
@@ -979,7 +1040,7 @@ impl DevContainerManifest {
 
         command.args(["-t", &features_build_info.image_tag]);
 
-        if self.config.build_type() == DevContainerBuildType::Dockerfile {
+        if dev_container.build_type() == DevContainerBuildType::Dockerfile {
             command.arg(self.config_directory.display().to_string());
         } else {
             // Use an empty folder as the build context to avoid pulling in unneeded files.
@@ -1055,42 +1116,32 @@ impl DevContainerManifest {
     }
 
     fn local_workspace_folder(&self) -> String {
-        if let Some(folder) = &self.config.workspace_folder {
-            folder.clone()
-        } else {
-            self.local_project_directory.display().to_string()
-        }
+        self.local_project_directory.display().to_string()
     }
     fn local_workspace_base_name(&self) -> Result<String, DevContainerErrorV2> {
-        if let Some(folder) = &self.config.workspace_folder {
-            let path = PathBuf::from(&folder);
-            path.file_name()
-                .map(|f| format!("{}", f.display()))
-                .ok_or(DevContainerErrorV2::UnmappedError)
-        } else {
-            self.local_project_directory
-                .file_name()
-                .map(|f| format!("{}", f.display()))
-                .ok_or(DevContainerErrorV2::UnmappedError)
-        }
+        self.local_project_directory
+            .file_name()
+            .map(|f| f.display().to_string())
+            .ok_or(DevContainerErrorV2::UnmappedError)
     }
 
-    fn remote_workspace_folder(&self) -> Result<String, DevContainerErrorV2> {
-        self.remote_workspace_mount()
-            .map(|path_buf| path_buf.display().to_string())
+    fn remote_workspace_folder(&self) -> Option<PathBuf> {
+        self.dev_container()
+            .workspace_folder
+            .as_ref()
+            .map(|folder| PathBuf::from(folder))
     }
-    fn remote_workspace_base_name(&self) -> Result<String, DevContainerErrorV2> {
-        self.remote_workspace_mount().and_then(|path_buf| {
-            path_buf
-                .file_name()
-                .map(|f| format!("{}", f.display()))
-                .ok_or(DevContainerErrorV2::UnmappedError)
-        })
+    fn remote_workspace_base_name(&self) -> Option<String> {
+        if let Some(path_buf) = &self.remote_workspace_folder() {
+            path_buf.file_name().map(|f| format!("{}", f.display()))
+        } else {
+            None
+        }
     }
 
     // Config isn't in place by the time I get here in the var subst process. How to get around this?
     fn remote_workspace_mount(&self) -> Result<PathBuf, DevContainerErrorV2> {
-        if let Some(mount) = &self.config.workspace_mount {
+        if let Some(mount) = &self.dev_container().workspace_mount {
             return Ok(PathBuf::from(&mount.target));
         }
         let Some(project_directory_name) = self.local_project_directory.file_name() else {
@@ -1442,7 +1493,7 @@ pub(crate) struct FeaturesBuildInfo {
     pub image_tag: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostRequirements {
     cpus: Option<u16>,
@@ -1450,7 +1501,7 @@ pub(crate) struct HostRequirements {
     storage: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum LifecycleCommand {
     InitializeCommand,
@@ -1460,7 +1511,7 @@ pub(crate) enum LifecycleCommand {
     PostStartCommand,
 }
 
-#[derive(Debug, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 struct LifecycleScriptInternal {
     command: Option<String>,
     args: Vec<String>,
@@ -1477,7 +1528,7 @@ impl LifecycleScriptInternal {
     }
 }
 
-#[derive(Debug, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 pub(crate) struct LifecyleScript {
     scripts: HashMap<String, LifecycleScriptInternal>,
 }
@@ -1578,7 +1629,7 @@ pub(crate) struct ContainerBuild {
     cache_from: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ShutdownAction {
     None,
@@ -1586,7 +1637,7 @@ pub(crate) enum ShutdownAction {
     StopCompose,
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum UserEnvProbe {
     None,
@@ -1601,14 +1652,14 @@ pub(crate) enum ForwardPort {
     Number(u16),
     String(String),
 }
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum PortAttributeProtocol {
     Https,
     Http,
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum OnAutoForward {
     Notify,
@@ -1619,7 +1670,7 @@ pub(crate) enum OnAutoForward {
     Ignore,
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PortAttributes {
     label: String,
@@ -1678,18 +1729,20 @@ struct DockerComposeConfig {
     volumes: HashMap<String, DockerComposeVolume>,
 }
 
-pub(crate) fn read_devcontainer_configuration(
+pub(crate) async fn read_devcontainer_configuration(
     config: DevContainerConfig,
-    local_project_path: Arc<&Path>,
+    context: &DevContainerContext,
+    environment: HashMap<String, String>,
 ) -> Result<DevContainer, DevContainerErrorV2> {
-    let config_path = local_project_path.join(config.config_path);
-
-    let devcontainer_contents = std::fs::read_to_string(&config_path).map_err(|e| {
-        log::error!("Unable to read devcontainer contents: {e}");
-        DevContainerErrorV2::UnmappedError
-    })?;
-
-    deserialize_devcontainer_json(&devcontainer_contents)
+    let mut dev_container = DevContainerManifest::new(
+        context.fs.clone(),
+        environment,
+        config,
+        Arc::new(&context.project_directory.as_ref()),
+    )
+    .await?;
+    dev_container.parse_nonremote_vars()?;
+    Ok(dev_container.dev_container().clone())
 }
 
 /// New and improved flow should look like this:
@@ -1707,16 +1760,23 @@ pub(crate) fn read_devcontainer_configuration(
 /// 6. If docker-compose config
 ///     1. TODO - this is the next thing
 pub(crate) async fn spawn_dev_container(
-    http_client: Arc<dyn HttpClient>,
-    fs: Arc<dyn Fs>,
+    context: &DevContainerContext,
     environment: HashMap<String, String>,
     config: DevContainerConfig,
     local_project_path: Arc<&Path>,
 ) -> Result<DevContainerUp, DevContainerErrorV2> {
-    let mut devcontainer_manifest =
-        DevContainerManifest::new(fs, environment, config, local_project_path.clone()).await?; // TODO kill this clone
+    let mut devcontainer_manifest = DevContainerManifest::new(
+        context.fs.clone(),
+        environment,
+        config,
+        local_project_path.clone(),
+    )
+    .await?; // TODO kill this clone
     // 2. ensure that object is valid
     devcontainer_manifest.validate_config()?;
+
+    // 3. Parse built-in variables
+    devcontainer_manifest.parse_nonremote_vars()?;
 
     // 4. run any initializeCommands
     log::info!("TODO, run initialze commands");
@@ -1749,7 +1809,7 @@ pub(crate) async fn spawn_dev_container(
         log::info!("Existing container not found. Building");
 
         devcontainer_manifest
-            .download_feature_and_dockerfile_resources(&http_client)
+            .download_feature_and_dockerfile_resources(&context.http_client)
             .await?;
 
         let build_resources = devcontainer_manifest.build_resources().await?;
@@ -1805,7 +1865,7 @@ fn find_primary_service(
     docker_compose: &DockerComposeResources,
     devcontainer: &DevContainerManifest,
 ) -> Result<(String, DockerComposeService), DevContainerErrorV2> {
-    let Some(service_name) = &devcontainer.config.service else {
+    let Some(service_name) = &devcontainer.dev_container().service else {
         return Err(DevContainerErrorV2::UnmappedError);
     };
 
@@ -2220,10 +2280,15 @@ fn get_remote_dir_from_config(
 async fn get_base_image_from_config(
     devcontainer: &DevContainerManifest,
 ) -> Result<String, DevContainerErrorV2> {
-    if let Some(image) = &devcontainer.config.image {
+    if let Some(image) = &devcontainer.dev_container().image {
         return Ok(image.to_string());
     }
-    if let Some(dockerfile) = devcontainer.config.build.as_ref().map(|b| &b.dockerfile) {
+    if let Some(dockerfile) = devcontainer
+        .dev_container()
+        .build
+        .as_ref()
+        .map(|b| &b.dockerfile)
+    {
         let dockerfile_contents = std::fs::read_to_string(
             devcontainer.config_directory.join(dockerfile),
         )
@@ -2233,7 +2298,7 @@ async fn get_base_image_from_config(
         })?;
         return image_from_dockerfile(devcontainer, dockerfile_contents);
     }
-    if devcontainer.config.docker_compose_file.is_some() {
+    if devcontainer.dev_container().docker_compose_file.is_some() {
         let docker_compose_manifest = devcontainer.docker_compose_manifest().await?;
         let (_, main_service) = find_primary_service(&docker_compose_manifest, &devcontainer)?;
 
@@ -2283,7 +2348,7 @@ fn image_from_dockerfile(
         })?;
 
     for (k, v) in devcontainer
-        .config
+        .dev_container()
         .build
         .as_ref()
         .and_then(|b| b.args.as_ref())
@@ -2303,7 +2368,7 @@ fn get_remote_user_from_config(
     if let DevContainer {
         remote_user: Some(user),
         ..
-    } = &devcontainer.config
+    } = &devcontainer.dev_container()
     {
         return Ok(user.clone());
     }
@@ -2326,7 +2391,7 @@ fn get_container_user_from_config(
     docker_config: &DockerInspect,
     devcontainer: &DevContainerManifest,
 ) -> Result<String, DevContainerErrorV2> {
-    if let Some(user) = &devcontainer.config.container_user {
+    if let Some(user) = &devcontainer.dev_container().container_user {
         return Ok(user.to_string());
     }
     if let Some(metadata) = &docker_config.config.labels.metadata {
@@ -2357,11 +2422,11 @@ mod test {
         DevContainerConfig, DevContainerErrorV2,
         docker::{DockerConfigLabels, DockerInspectConfig},
         model::{
-            ContainerBuild, DevContainer, DevContainerBuildType, DevContainerManifest,
-            DockerInspect, FeatureOptions, ForwardPort, HostRequirements, LifecycleCommand,
-            LifecyleScript, MountDefinition, OnAutoForward, PortAttributeProtocol, PortAttributes,
-            ShutdownAction, UserEnvProbe, deserialize_devcontainer_json,
-            get_remote_user_from_config,
+            ConfigStatus, ContainerBuild, DevContainer, DevContainerBuildType,
+            DevContainerManifest, DockerInspect, FeatureOptions, ForwardPort, HostRequirements,
+            LifecycleCommand, LifecyleScript, MountDefinition, OnAutoForward,
+            PortAttributeProtocol, PortAttributes, ShutdownAction, UserEnvProbe,
+            deserialize_devcontainer_json, get_remote_user_from_config,
         },
     };
     const TEST_PROJECT_PATH: &str = "/path/to/local/project";
@@ -4468,7 +4533,7 @@ mod test {
     }
 }
                     "#;
-        let devcontainer_manifest = init_devcontainer_manifest(
+        let mut devcontainer_manifest = init_devcontainer_manifest(
             fs,
             HashMap::from([
                 ("local_env_1".to_string(), "local_env_value1".to_string()),
@@ -4479,10 +4544,13 @@ mod test {
         .await
         .unwrap();
 
-        let variable_replaced_devcontainer = devcontainer_manifest
-            .replace_nonremote_vars(given_devcontainer_contents)
-            .and_then(|raw| deserialize_devcontainer_json(&raw))
-            .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        let ConfigStatus::VariableParsed(variable_replaced_devcontainer) =
+            &devcontainer_manifest.config
+        else {
+            panic!("Config not parsed");
+        };
 
         // ${devcontainerId}
         let devcontainer_id = devcontainer_manifest.devcontainer_id();
@@ -4571,19 +4639,22 @@ mod test {
 
                     },
                     "workspaceMount": "source=/local/folder,target=/workspace/subfolder,type=bind,consistency=cached",
-                    "workspaceFolder": "/local/folder"
+                    "workspaceFolder": "/workspace/customfolder"
                 }
             "#;
 
-        let devcontainer_manifest =
+        let mut devcontainer_manifest =
             init_devcontainer_manifest(fs, HashMap::default(), given_devcontainer_contents)
                 .await
                 .unwrap();
 
-        let variable_replaced_devcontainer = devcontainer_manifest
-            .replace_nonremote_vars(given_devcontainer_contents)
-            .and_then(|raw| deserialize_devcontainer_json(&raw))
-            .unwrap();
+        devcontainer_manifest.parse_nonremote_vars().unwrap();
+
+        let ConfigStatus::VariableParsed(variable_replaced_devcontainer) =
+            &devcontainer_manifest.config
+        else {
+            panic!("Config not parsed");
+        };
 
         // ${devcontainerId}
         let devcontainer_id = devcontainer_manifest.devcontainer_id();
@@ -4605,7 +4676,7 @@ mod test {
                 .remote_env
                 .as_ref()
                 .and_then(|env| env.get("REMOTE_WORKSPACE_FOLDER_BASENAME")),
-            Some(&"subfolder".to_string())
+            Some(&"customfolder".to_string())
         );
 
         // ${localWorkspaceFolderBasename}
@@ -4614,7 +4685,7 @@ mod test {
                 .remote_env
                 .as_ref()
                 .and_then(|env| env.get("LOCAL_WORKSPACE_FOLDER_BASENAME")),
-            Some(&"folder".to_string())
+            Some(&"project".to_string())
         );
 
         // ${containerWorkspaceFolder}
@@ -4623,7 +4694,7 @@ mod test {
                 .remote_env
                 .as_ref()
                 .and_then(|env| env.get("REMOTE_WORKSPACE_FOLDER")),
-            Some(&"/workspace/subfolder".to_string())
+            Some(&"/workspace/customfolder".to_string())
         );
 
         // ${localWorkspaceFolder}
@@ -4632,7 +4703,7 @@ mod test {
                 .remote_env
                 .as_ref()
                 .and_then(|env| env.get("LOCAL_WORKSPACE_FOLDER")),
-            Some(&"/local/folder".to_string())
+            Some(&TEST_PROJECT_PATH.to_string())
         );
     }
 }
