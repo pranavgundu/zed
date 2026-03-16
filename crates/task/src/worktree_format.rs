@@ -8,7 +8,7 @@ use crate::TaskTemplate;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum WorktreeTaskDefinition {
-    ByName(SharedString),
+    InLine(SharedString),
     Template {
         #[serde(flatten)]
         task_template: TaskTemplate,
@@ -51,7 +51,7 @@ mod tests {
         let definition: WorktreeTaskDefinition = serde_json::from_str(r#""bootstrap""#).unwrap();
 
         match definition {
-            WorktreeTaskDefinition::ByName(name) => assert_eq!(name.as_ref(), "bootstrap"),
+            WorktreeTaskDefinition::InLine(name) => assert_eq!(name.as_ref(), "bootstrap"),
             WorktreeTaskDefinition::Template { .. } => panic!("expected task name"),
         }
     }
@@ -73,7 +73,7 @@ mod tests {
                 assert_eq!(task_template.command, "pnpm");
                 assert_eq!(task_template.args, vec!["install"]);
             }
-            WorktreeTaskDefinition::ByName(_) => panic!("expected inline task"),
+            WorktreeTaskDefinition::InLine(_) => panic!("expected inline task"),
         }
     }
 
@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(tasks.teardown.len(), 1);
 
         match &tasks.setup[0] {
-            WorktreeTaskDefinition::ByName(name) => assert_eq!(name.as_ref(), "bootstrap"),
+            WorktreeTaskDefinition::InLine(name) => assert_eq!(name.as_ref(), "bootstrap"),
             WorktreeTaskDefinition::Template { .. } => panic!("expected task name"),
         }
 
@@ -108,11 +108,11 @@ mod tests {
                 assert_eq!(task_template.command, "pnpm");
                 assert_eq!(task_template.args, vec!["install"]);
             }
-            WorktreeTaskDefinition::ByName(_) => panic!("expected inline task"),
+            WorktreeTaskDefinition::InLine(_) => panic!("expected inline task"),
         }
 
         match &tasks.teardown[0] {
-            WorktreeTaskDefinition::ByName(name) => assert_eq!(name.as_ref(), "cleanup"),
+            WorktreeTaskDefinition::InLine(name) => assert_eq!(name.as_ref(), "cleanup"),
             WorktreeTaskDefinition::Template { .. } => panic!("expected task name"),
         }
     }

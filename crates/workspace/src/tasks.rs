@@ -182,13 +182,6 @@ impl Workspace {
             return;
         }
 
-        let inventory = project
-            .read(cx)
-            .task_store()
-            .read(cx)
-            .task_inventory()
-            .cloned();
-
         let task = cx.spawn_in(window, async move |workspace, cx| {
             let mut tasks = Vec::new();
             for (worktree_id, task_context, definitions) in worktree_tasks {
@@ -196,34 +189,15 @@ impl Workspace {
 
                 tasks.push(cx.spawn({
                     let workspace = workspace.clone();
-                    let inventory = inventory.clone();
                     async move |cx| {
                         for definition in definitions {
                             let task_template = match definition {
                                 WorktreeTaskDefinition::Template { task_template } => task_template,
-                                WorktreeTaskDefinition::ByName(label) => {
-                                    let Some(ref inventory) = inventory else {
-                                        continue;
-                                    };
-                                    let lookup = inventory.read_with(cx, |inventory, cx| {
-                                        inventory.task_template_by_label(
-                                            None,
-                                            Some(worktree_id),
-                                            &label,
-                                            cx,
-                                        )
-                                    });
-                                    match lookup.await {
-                                        Some(template) => template,
-                                        None => {
-                                            log::warn!(
-                                                "Could not find task template named '{label}' \
-                                                 for git worktree setup"
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                }
+                                WorktreeTaskDefinition::InLine(command) => TaskTemplate {
+                                    label: command.to_string(),
+                                    command: command.to_string(),
+                                    ..Default::default()
+                                },
                             };
 
                             let Some(resolved) =

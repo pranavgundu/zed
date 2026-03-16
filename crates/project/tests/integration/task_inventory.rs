@@ -353,7 +353,7 @@ async fn test_loading_worktree_scripts(cx: &mut TestAppContext) {
 
     assert_eq!(worktree_tasks.setup.len(), 2);
     match &worktree_tasks.setup[0] {
-        WorktreeTaskDefinition::ByName(name) => assert_eq!(name.as_ref(), "bootstrap"),
+        WorktreeTaskDefinition::InLine(name) => assert_eq!(name.as_ref(), "bootstrap"),
         _ => panic!("Expected named setup task"),
     }
     match &worktree_tasks.setup[1] {
@@ -365,7 +365,7 @@ async fn test_loading_worktree_scripts(cx: &mut TestAppContext) {
         _ => panic!("Expected inline setup task"),
     }
     match &worktree_tasks.teardown[0] {
-        WorktreeTaskDefinition::ByName(name) => assert_eq!(name.as_ref(), "cleanup"),
+        WorktreeTaskDefinition::InLine(name) => assert_eq!(name.as_ref(), "cleanup"),
         _ => panic!("Expected named teardown task"),
     }
 
