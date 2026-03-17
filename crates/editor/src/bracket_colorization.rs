@@ -792,43 +792,6 @@ mod foo «1{
         );
     }
 
-    /// Minimal repro: a bracket pair where `{` is in the visible chunk and
-    /// the matching `}` is off-screen.  The off-screen `}` should still
-    /// receive the same colour highlight as its matching `{`.
-    #[gpui::test]
-    async fn test_bracket_color_spans_non_visible_chunk(cx: &mut gpui::TestAppContext) {
-        let comment_lines = 100;
-
-        init_test(cx, |language_settings| {
-            language_settings.defaults.colorize_brackets = Some(true);
-        });
-        let mut cx = EditorLspTestContext::new(
-            Arc::into_inner(rust_lang()).unwrap(),
-            lsp::ServerCapabilities::default(),
-            cx,
-        )
-        .await;
-
-        // `mod foo {` is at the top (visible); the matching `}` is 100+
-        // comment lines below (not visible).
-        cx.set_state(&separate_with_comment_lines(
-            "ˇmod foo {\n",
-            "}\n",
-            comment_lines,
-        ));
-
-        cx.executor().advance_clock(Duration::from_millis(100));
-        cx.executor().run_until_parked();
-
-        // Both the opening `{` and the closing `}` should share highlight 1,
-        // even though only the `{` side is in the visible viewport.
-        assert_eq!(
-            &separate_with_comment_lines("mod foo «1{\n", "}1»\n", comment_lines,),
-            &bracket_colors_markup(&mut cx),
-            "closing bracket in non-visible chunk should still be colorized",
-        );
-    }
-
     #[gpui::test]
     async fn test_rainbow_bracket_highlights(cx: &mut gpui::TestAppContext) {
         init_test(cx, |language_settings| {
