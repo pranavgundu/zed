@@ -1226,7 +1226,7 @@ mod git_worktrees {
             repository.update(cx, |repository, _| {
                 repository.create_worktree(
                     "feature-branch".to_string(),
-                    worktree_directory.clone(),
+                    worktree_directory.join("feature-branch"),
                     Some("abc123".to_string()),
                 )
             })
@@ -1252,7 +1252,7 @@ mod git_worktrees {
             repository.update(cx, |repository, _| {
                 repository.create_worktree(
                     "bugfix-branch".to_string(),
-                    worktree_directory.clone(),
+                    worktree_directory.join("bugfix-branch"),
                     None,
                 )
             })

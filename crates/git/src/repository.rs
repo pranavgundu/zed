@@ -769,7 +769,7 @@ pub trait GitRepository: Send + Sync {
 
     fn create_worktree(
         &self,
-        name: String,
+        branch_name: String,
         directory: PathBuf,
         from_commit: Option<String>,
     ) -> BoxFuture<'_, Result<()>>;
@@ -1717,7 +1717,6 @@ impl GitRepository for RealGitRepository {
         from_commit: Option<String>,
     ) -> BoxFuture<'_, Result<()>> {
         let git_binary = self.git_binary();
-        let final_path = directory.join(&name);
         let mut args = vec![
             OsString::from("--no-optional-locks"),
             OsString::from("worktree"),
@@ -1725,7 +1724,7 @@ impl GitRepository for RealGitRepository {
             OsString::from("-b"),
             OsString::from(name.as_str()),
             OsString::from("--"),
-            OsString::from(final_path.as_os_str()),
+            OsString::from(directory.as_os_str()),
         ];
         if let Some(from_commit) = from_commit {
             args.push(OsString::from(from_commit));
@@ -1735,7 +1734,7 @@ impl GitRepository for RealGitRepository {
 
         self.executor
             .spawn(async move {
-                std::fs::create_dir_all(final_path.parent().unwrap_or(&final_path))?;
+                std::fs::create_dir_all(directory.parent().unwrap_or(&directory))?;
                 let git = git_binary?;
                 let output = git.build_command(&args).output().await?;
                 if output.status.success() {

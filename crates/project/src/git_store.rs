@@ -5757,24 +5757,26 @@ impl Repository {
 
     pub fn create_worktree(
         &mut self,
-        name: String,
+        branch_name: String,
         directory: PathBuf,
         commit: Option<String>,
     ) -> oneshot::Receiver<Result<()>> {
         let id = self.id;
         self.send_job(
-            Some("git worktree add".into()),
+            Some(format!("git worktree add - {}", branch_name).into()),
             move |repo, _cx| async move {
                 match repo {
                     RepositoryState::Local(LocalRepositoryState { backend, .. }) => {
-                        backend.create_worktree(name, directory, commit).await
+                        backend
+                            .create_worktree(branch_name, directory, commit)
+                            .await
                     }
                     RepositoryState::Remote(RemoteRepositoryState { project_id, client }) => {
                         client
                             .request(proto::GitCreateWorktree {
                                 project_id: project_id.0,
                                 repository_id: id.to_proto(),
-                                name,
+                                name: branch_name,
                                 directory: directory.to_string_lossy().to_string(),
                                 commit,
                             })

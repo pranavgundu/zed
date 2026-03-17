@@ -304,7 +304,8 @@ impl WorktreeListDelegate {
                 let directory =
                     validate_worktree_directory(&original_repo, &worktree_directory_setting)?;
                 let new_worktree_path = directory.join(&branch);
-                let receiver = repo.create_worktree(branch.clone(), directory, commit);
+                let receiver =
+                    repo.create_worktree(branch.clone(), new_worktree_path.clone(), commit);
                 anyhow::Ok((receiver, new_worktree_path))
             })?;
             receiver.await??;

@@ -2596,10 +2596,14 @@ impl AgentPanel {
         for repo in git_repos {
             let (work_dir, new_path, receiver) = repo.update(cx, |repo, _cx| {
                 let original_repo = repo.original_repo_abs_path.clone();
+                let project_name = original_repo
+                    .file_name()
+                    .ok_or_else(|| anyhow!("git repo must have a directory name"))?;
                 let directory =
                     validate_worktree_directory(&original_repo, worktree_directory_setting)?;
-                let new_path = directory.join(branch_name);
-                let receiver = repo.create_worktree(branch_name.to_string(), directory, None);
+                let new_path = directory.join(branch_name).join(project_name);
+                let receiver =
+                    repo.create_worktree(branch_name.to_string(), new_path.clone(), None);
                 let work_dir = repo.work_directory_abs_path.clone();
                 anyhow::Ok((work_dir, new_path, receiver))
             })?;
