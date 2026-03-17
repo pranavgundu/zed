@@ -10,8 +10,9 @@ use gpui::{Action, AppContext as _, Entity, EventEmitter, Focusable, Subscriptio
 use itertools::Itertools;
 use language::{Buffer, Capability};
 use multi_buffer::{
-    Anchor, AnchorRangeExt as _, BufferOffset, ExcerptRange, ExpandExcerptDirection, MultiBuffer,
-    MultiBufferDiffHunk, MultiBufferExcerpt2, MultiBufferPoint, MultiBufferSnapshot, PathKey,
+    Anchor, AnchorRangeExt as _, BufferOffset, ExcerptInfo, ExcerptRange, ExpandExcerptDirection,
+    MultiBuffer, MultiBufferDiffHunk, MultiBufferExcerpt2, MultiBufferPoint, MultiBufferSnapshot,
+    PathKey,
 };
 use project::Project;
 use rope::Point;
@@ -169,8 +170,8 @@ fn patches_for_range<F>(
 where
     F: Fn(&BufferDiffSnapshot, RangeInclusive<Point>, &text::BufferSnapshot) -> Patch<Point>,
 {
-    struct PendingExcerpt<'a> {
-        source_excerpt: MultiBufferExcerpt2<'a>,
+    struct PendingExcerpt {
+        source_excerpt: ExcerptInfo,
         buffer_point_range: Range<Point>,
         source_context_range: Range<Point>,
     }
@@ -190,10 +191,9 @@ where
         };
 
         let diff = source_snapshot
-            .diff_for_buffer_id(first.source_excerpt.buffer_snapshot().remote_id())
+            .diff_for_buffer_id(first.source_excerpt.buffer_id)
             .expect("buffer with no diff when creating patches");
-        let source_is_lhs =
-            first.source_excerpt.buffer_snapshot().remote_id() == diff.base_text().remote_id();
+        let source_is_lhs = first.source_excerpt.buffer_id == diff.base_text().remote_id();
         let target_buffer_id = if source_is_lhs {
             diff.buffer_id()
         } else {
@@ -205,7 +205,7 @@ where
         let rhs_buffer = if source_is_lhs {
             target_buffer
         } else {
-            first.source_excerpt.buffer_snapshot()
+            first.source_excerpt.buffer_snapshot(source_snapshot)
         };
 
         let patch = translate_fn(diff, union_start..=union_end, rhs_buffer);
@@ -256,7 +256,7 @@ where
         }));
 
         pending_excerpts.push(PendingExcerpt {
-            source_excerpt,
+            source_excerpt: source_excerpt.info(),
             buffer_point_range,
             source_context_range,
         });
@@ -272,18 +272,18 @@ where
 fn patch_for_excerpt(
     source_snapshot: &MultiBufferSnapshot,
     target_snapshot: &MultiBufferSnapshot,
-    source_excerpt: MultiBufferExcerpt2<'_>,
-    target_excerpt: MultiBufferExcerpt2<'_>,
+    source_excerpt: ExcerptInfo,
+    target_excerpt: ExcerptInfo,
     patch: &Patch<Point>,
     source_edited_range: Range<Point>,
 ) -> CompanionExcerptPatch {
     let source_buffer_range = source_excerpt
         .buffer_range()
-        .to_point(source_excerpt.buffer_snapshot());
+        .to_point(source_excerpt.buffer_snapshot(source_snapshot));
     let source_multibuffer_range = source_excerpt.multibuffer_range().to_point(source_snapshot);
     let target_buffer_range = target_excerpt
         .buffer_range()
-        .to_point(target_excerpt.buffer_snapshot());
+        .to_point(target_excerpt.buffer_snapshot(target_snapshot));
     let target_multibuffer_range = target_excerpt.multibuffer_range().to_point(target_snapshot);
 
     let edits = patch

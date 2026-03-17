@@ -3203,8 +3203,8 @@ impl Editor {
     pub fn active_buffer(&self, cx: &App) -> Option<Entity<Buffer>> {
         let multibuffer = self.buffer.read(cx);
         let snapshot = multibuffer.snapshot(cx);
-        let excerpt = snapshot.excerpt_for_position(self.selections.newest_anchor().head())?;
-        Some(excerpt.buffer(multibuffer))
+        let anchor = snapshot.anchor_to_buffer_anchor(self.selections.newest_anchor().head())?;
+        multibuffer.buffer(anchor.buffer_id)
     }
 
     pub fn mode(&self) -> &EditorMode {
@@ -17468,7 +17468,7 @@ impl Editor {
             let multi_buffer = self.buffer.read(cx);
             let snapshot = multi_buffer.snapshot(cx);
             if let Some(excerpt) = snapshot.excerpt_containing2(excerpt_anchor..excerpt_anchor) {
-                let buffer_snapshot = excerpt.buffer_snapshot();
+                let buffer_snapshot = excerpt.buffer_snapshot(&snapshot);
                 let excerpt_end_row =
                     Point::from_anchor(&excerpt.buffer_range().end, &buffer_snapshot).row;
                 let last_row = buffer_snapshot.max_point().row;
@@ -20470,7 +20470,7 @@ impl Editor {
         let multi_buffer = self.buffer().read(cx).snapshot(cx);
         for range in ranges {
             if let Some(excerpt) = multi_buffer.excerpt_containing2(range.clone()) {
-                buffers_affected.insert(excerpt.buffer_id());
+                buffers_affected.insert(excerpt.buffer_id);
             };
         }
 
@@ -20560,7 +20560,7 @@ impl Editor {
                         .excerpt_info
                         .multibuffer_range()
                         .end
-                        .cmp(&end_excerpt?.end_anchor(), buffer)
+                        .cmp(&end_excerpt.as_ref()?.end_anchor(), buffer)
                         .is_le()
                     {
                         Some(hunk)

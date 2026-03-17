@@ -108,12 +108,28 @@ impl ExcerptInfo {
         Anchor::in_buffer(self.path_key_index, self.range.context.start)
     }
 
-    pub fn buffer(&self, multibuffer: &MultiBuffer) -> Entity<Buffer> {
-        todo!()
+    pub fn buffer_snapshot<'a>(&self, multibuffer: &'a MultiBufferSnapshot) -> &'a BufferSnapshot {
+        let buffer_state_snapshot = multibuffer
+            .buffers
+            .get(&self.buffer_id)
+            .expect("excerpt from nonexistent buffer");
+
+        if cfg!(debug_assertions) {
+            debug_assert_eq!(
+                Some(&buffer_state_snapshot.path_key),
+                multibuffer.path_keys_by_index.get(&self.path_key_index)
+            );
+        }
+
+        &buffer_state_snapshot.buffer_snapshot
     }
 
     pub fn multibuffer_range(&self) -> Range<Anchor> {
-        todo!()
+        Anchor::range_in_buffer(self.path_key_index, self.range.context.clone())
+    }
+
+    pub fn buffer_range(&self) -> Range<text::Anchor> {
+        self.range.context.clone()
     }
 }
 
@@ -3739,7 +3755,7 @@ impl MultiBufferSnapshot {
         result
     }
 
-    // todo!() rethink signature
+    // todo!() rethink signature, should return ExcerptInfo
     pub fn range_to_buffer_ranges<T: ToOffset>(
         &self,
         range: Range<T>,
@@ -6437,10 +6453,8 @@ impl MultiBufferSnapshot {
     }
 
     /// Returns the excerpt containing range and its offset start within the multibuffer or none if `range` spans multiple excerpts
-    pub fn excerpt_containing2<T: ToOffset>(
-        &self,
-        range: Range<T>,
-    ) -> Option<MultiBufferExcerpt2<'_>> {
+    /// FIXME rename
+    pub fn excerpt_containing2<T: ToOffset>(&self, range: Range<T>) -> Option<ExcerptInfo> {
         let range = range.start.to_offset(self)..range.end.to_offset(self);
         let mut cursor = self.cursor::<MultiBufferOffset, BufferOffset>();
         cursor.seek(&range.start);
@@ -6453,7 +6467,7 @@ impl MultiBufferSnapshot {
             }
         }
 
-        Some(start_excerpt.excerpt2(&self))
+        Some(start_excerpt.info())
     }
 
     /// Returns the excerpt containing range and its offset start within the multibuffer or none if `range` spans multiple excerpts
@@ -6488,6 +6502,7 @@ impl MultiBufferSnapshot {
         })
     }
 
+    // FIXME delete this
     pub fn buffer_id_for_anchor(&self, anchor: Anchor) -> Option<BufferId> {
         match anchor {
             Anchor::Min => self.excerpts.first().map(|excerpt| excerpt.buffer_id),
@@ -6502,7 +6517,7 @@ impl MultiBufferSnapshot {
         include_local: bool,
     ) -> impl 'a + Iterator<Item = (ReplicaId, bool, CursorShape, Selection<Anchor>)> {
         let mut cursor = self.excerpts.cursor::<ExcerptSummary>(());
-        cursor.seek(&range.start.seek_target(self), Bias::Left);
+        cursor.seek(dbg!(&range.start.seek_target(self)), Bias::Left);
         cursor
             .take_while(move |excerpt| {
                 let excerpt_start =
@@ -6732,8 +6747,8 @@ impl MultiBufferSnapshot {
     /// Returns the excerpt containing the given multibuffer anchor.
     ///
     /// Returns None if there are no excerpts.
-    pub fn excerpt_for_position(&self, head: Anchor) -> Option<MultiBufferExcerpt2<'_>> {
-        todo!()
+    pub fn excerpt_for_position(&self, head: Anchor) -> Option<ExcerptInfo> {
+        self.excerpt_containing2(head..head)
     }
 
     pub fn excerpt_for_range(
@@ -6793,7 +6808,9 @@ impl MultiBufferSnapshot {
     pub fn buffers_with_paths<'a>(
         &'a self,
     ) -> impl 'a + Iterator<Item = (&'a BufferSnapshot, &'a PathKey)> {
-        std::iter::once(todo!())
+        self.buffers
+            .values()
+            .map(|buffer| (&buffer.buffer_snapshot, &buffer.path_key))
     }
 }
 

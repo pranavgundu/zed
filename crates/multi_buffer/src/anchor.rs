@@ -46,6 +46,24 @@ pub(crate) enum AnchorSeekTarget {
     Max,
 }
 
+impl std::fmt::Debug for AnchorSeekTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Min => write!(f, "Min"),
+            Self::Excerpt {
+                path_key,
+                anchor,
+                snapshot,
+            } => f
+                .debug_struct("Excerpt")
+                .field("path_key", path_key)
+                .field("anchor", anchor)
+                .finish(),
+            Self::Max => write!(f, "Max"),
+        }
+    }
+}
+
 impl std::fmt::Debug for Anchor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
