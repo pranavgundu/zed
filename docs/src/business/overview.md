@@ -1,29 +1,37 @@
 ---
 title: Zed Business
-description: Zed Business gives teams centralized billing, admin controls, and enforced privacy settings for every member of your organization.
+description: Zed Business gives teams centralized billing, org-wide admin controls, and enforced privacy settings for every member of your organization.
 ---
 
 # Zed Business
 
-Zed Business is a plan for organizations where developers have already chosen Zed but
-need admin controls to get it approved. It adds org-wide data controls, centralized
-billing, and RBAC — the things security teams and engineering leaders need to say yes.
+Zed Business is Zed for your whole team. Every member gets full Zed Pro access, and
+administrators get the controls they need to manage how Zed is used across the
+organization — what AI features are available, what data leaves your environment, and
+how AI spend is tracked.
+
+It's designed for teams that want modern AI tooling without compromising on security or
+privacy, and for companies that need to meet procurement and compliance requirements
+before they can deploy new developer tools.
 
 ## What's Included
 
-Every member of a Zed Business organization gets full Zed Pro features, including all
-hosted AI models and Edit Predictions.
+Every member gets full Zed Pro access: all hosted AI models and Edit Predictions.
 
-For the organization as a whole:
+For the organization:
 
-- **Org-wide data controls** — administrators can restrict what data leaves the
-  organization: Zed-hosted AI models, Edit Predictions, collaboration, and telemetry
-  can all be disabled at the org level
-- **Private by default, not by configuration** — Zed does not store your team's prompts
-  or train on them; this applies regardless of individual member settings
-- **RBAC & permissions** — role-based access across the organization, with Owner, Admin,
-  and Member roles
-- **Centralized billing** — one invoice covering all members' licenses and AI usage
+- **Org-wide data controls** — administrators decide what data leaves your environment.
+  Zed-hosted AI, Edit Predictions, and real-time collaboration can be toggled on or off
+  for the whole org. Members don't need to configure anything individually.
+- **Private by default, not by configuration** — Zed doesn't store your team's prompts
+  or train on them, and that's not something members can change on their own.
+- **RBAC and permissions** — owners, admins, and members each have clearly defined
+  access. Billing and org settings are only available to the roles that need them.
+- **Unified invoices** — your team's licenses and AI usage go on one Zed account. No
+  separate bills per member.
+
+<!-- TODO: confirm Edit Predictions behavior for Business (unlimited vs. metered) before launch -->
+<!-- TODO: confirm whether per-member usage visibility ships at launch -->
 
 ## How It Differs from Pro
 
@@ -32,11 +40,8 @@ For the organization as a whole:
 | Hosted AI models       | —    | ✓   | ✓        |
 | Edit Predictions       | —    | ✓   | ✓        |
 | Org-wide data controls | —    | —   | ✓        |
-| RBAC & permissions     | —    | —   | ✓        |
-| Centralized billing    | —    | —   | ✓        |
-
-<!-- TODO: confirm Edit Predictions behavior for Business (unlimited vs. metered) before launch -->
-<!-- TODO: confirm whether per-member usage visibility ships at launch -->
+| RBAC and permissions   | —    | —   | ✓        |
+| Unified invoices       | —    | —   | ✓        |
 
 ## Getting Started
 
