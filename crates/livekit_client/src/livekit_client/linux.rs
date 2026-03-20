@@ -10,7 +10,7 @@ use livekit::webrtc::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 static NEXT_WAYLAND_SHARE_ID: AtomicU64 = AtomicU64::new(1);
@@ -64,6 +64,19 @@ pub(crate) async fn start_wayland_desktop_capture(
     };
     use libwebrtc::native::yuv_helper::argb_to_nv12;
     use std::time::Duration;
+    use webrtc_sys::webrtc::ffi as webrtc_ffi;
+
+    fn webrtc_log_callback(message: String, severity: webrtc_ffi::LoggingSeverity) {
+        match severity {
+            webrtc_ffi::LoggingSeverity::Error => log::error!("[webrtc] {}", message.trim()),
+            webrtc_ffi::LoggingSeverity::Warning => log::warn!("[webrtc] {}", message.trim()),
+            webrtc_ffi::LoggingSeverity::Info => log::info!("[webrtc] {}", message.trim()),
+            _ => log::debug!("[webrtc] {}", message.trim()),
+        }
+    }
+
+    let _webrtc_log_sink = webrtc_ffi::new_log_sink(webrtc_log_callback);
+    log::info!("Wayland desktop capture: WebRTC internal logging enabled");
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let (mut video_source_tx, mut video_source_rx) = mpsc::channel::<NativeVideoSource>(1);
@@ -79,9 +92,13 @@ pub(crate) async fn start_wayland_desktop_capture(
     })?;
 
     let permanent_error = Arc::new(AtomicBool::new(false));
+    let temporary_error_count = Arc::new(AtomicU32::new(0));
+    let first_frame_received = Arc::new(AtomicBool::new(false));
 
     let stop_cb = stop_flag.clone();
     let permanent_error_cb = permanent_error.clone();
+    let temporary_error_count_cb = temporary_error_count.clone();
+    let first_frame_received_cb = first_frame_received.clone();
     capturer.start_capture(None, {
         let mut video_source: Option<NativeVideoSource> = None;
         let mut current_width: u32 = 0;
@@ -94,8 +111,20 @@ pub(crate) async fn start_wayland_desktop_capture(
 
         move |result: Result<DesktopFrame, CaptureError>| {
             let frame = match result {
-                Ok(frame) => frame,
-                Err(CaptureError::Temporary) => return,
+                Ok(frame) => {
+                    if !first_frame_received_cb.swap(true, Ordering::Relaxed) {
+                        let skipped = temporary_error_count_cb.load(Ordering::Relaxed);
+                        log::info!(
+                            "Wayland desktop capture: first frame received \
+                             (after {skipped} temporary errors)"
+                        );
+                    }
+                    frame
+                }
+                Err(CaptureError::Temporary) => {
+                    temporary_error_count_cb.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
                 Err(CaptureError::Permanent) => {
                     log::error!("Wayland desktop capture encountered a permanent error");
                     permanent_error_cb.store(true, Ordering::Release);
@@ -136,13 +165,29 @@ pub(crate) async fn start_wayland_desktop_capture(
         }
     });
 
+    log::info!("Wayland desktop capture: starting capture loop");
+
     let stop = stop_flag.clone();
+    let temporary_error_count_loop = temporary_error_count.clone();
+    let first_frame_received_loop = first_frame_received.clone();
     let tokio_task = gpui_tokio::Tokio::spawn(cx, async move {
+        let mut poll_count: u64 = 0;
         loop {
             if stop.load(Ordering::Acquire) {
                 break;
             }
             capturer.capture_frame();
+            poll_count += 1;
+
+            if !first_frame_received_loop.load(Ordering::Relaxed) && poll_count % 150 == 0 {
+                let temporary_errors = temporary_error_count_loop.load(Ordering::Relaxed);
+                log::warn!(
+                    "Wayland desktop capture: still waiting for first frame \
+                     ({poll_count} polls, {temporary_errors} temporary errors). \
+                     PipeWire may not be delivering frames."
+                );
+            }
+
             tokio::time::sleep(Duration::from_millis(33)).await;
         }
         drop(capturer);
@@ -162,12 +207,21 @@ pub(crate) async fn start_wayland_desktop_capture(
     let executor = cx.background_executor().clone();
     let video_source = video_source_rx
         .next()
-        .with_timeout(Duration::from_secs(15), &executor)
+        .with_timeout(Duration::from_secs(60), &executor)
         .await
         .map_err(|_| {
+            let temporary_errors = temporary_error_count.load(Ordering::Relaxed);
+            let got_first_frame = first_frame_received.load(Ordering::Relaxed);
             stop_flag.store(true, Ordering::Relaxed);
+            log::error!(
+                "Wayland desktop capture timed out. \
+                 Diagnostics: temporary_errors={temporary_errors}, \
+                 first_frame_received={got_first_frame}"
+            );
             anyhow::anyhow!(
-                "Screen sharing timed out waiting for the first frame. \
+                "Screen sharing timed out waiting for the first frame \
+                 ({temporary_errors} temporary capture errors, \
+                 first_frame_received={got_first_frame}). \
                  Check that xdg-desktop-portal and PipeWire are running, \
                  and that your portal backend matches your compositor."
             )
