@@ -16,6 +16,7 @@ use language::{BufferSnapshot, CharKind, Point, Selection, TextObject, TreeSitte
 use multi_buffer::MultiBufferRow;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use text::{OffsetRangeExt as _, ToOffset as _};
 use ui::Context;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -1210,10 +1211,12 @@ fn argument(
 ) -> Option<Range<DisplayPoint>> {
     let snapshot = &map.buffer_snapshot();
     let offset = relative_to.to_offset(map, Bias::Left);
+    let anchor = snapshot.anchor_after(offset);
+    let buffer_anchor = snapshot.anchor_to_buffer_anchor(anchor)?;
 
     // The `argument` vim text object uses the syntax tree, so we operate at the buffer level and map back to the display level
-    let mut excerpt = snapshot.excerpt_containing(offset..offset)?;
-    let buffer = excerpt.buffer(snapshot);
+    let (buffer, excerpt_range) = snapshot.excerpt_containing2(offset..offset)?;
+    let excerpt_range = excerpt_range.context.to_offset(buffer);
 
     fn comma_delimited_range_at(
         buffer: &BufferSnapshot,
@@ -1342,14 +1345,14 @@ fn argument(
         Some(BufferOffset(start)..BufferOffset(end))
     }
 
-    let result = comma_delimited_range_at(buffer, excerpt.map_offset_to_buffer(offset), around)?;
+    let result = comma_delimited_range_at(
+        buffer,
+        BufferOffset(buffer_anchor.to_offset(buffer)),
+        around,
+    )?;
 
-    if excerpt.contains_buffer_range(result.clone(), snapshot) {
-        let result = excerpt.map_range_from_buffer(result);
-        Some(result.start.to_display_point(map)..result.end.to_display_point(map))
-    } else {
-        None
-    }
+    let result = snapshot.anchor_range_in_buffer(buffer.anchor_range_inside(result))?;
+    result.start.to_display_point(map)..result.end.to_display_point(map);
 }
 
 fn indent(

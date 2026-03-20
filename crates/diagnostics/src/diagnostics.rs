@@ -301,17 +301,21 @@ impl ProjectDiagnosticsEditor {
         let snapshot = self
             .editor
             .update(cx, |editor, cx| editor.display_snapshot(cx));
-        let buffer = self.multibuffer.read(cx);
-        let buffer_ids = buffer.all_buffer_ids();
         let selected_buffers = self.editor.update(cx, |editor, _| {
             editor
                 .selections
                 .all_anchors(&snapshot)
                 .iter()
-                .filter_map(|anchor| anchor.start.text_anchor.buffer_id)
+                .filter_map(|anchor| {
+                    Some(snapshot.anchor_to_buffer_anchor(anchor.start)?.buffer_id)
+                })
                 .collect::<HashSet<_>>()
         });
-        for buffer_id in buffer_ids {
+        for buffer_id in snapshot
+            .excerpts()
+            .map(|excerpt| excerpt.context.start.buffer_id)
+            .dedup()
+        {
             if retain_selections && selected_buffers.contains(&buffer_id) {
                 continue;
             }
@@ -581,9 +585,9 @@ impl ProjectDiagnosticsEditor {
                     match retain_excerpts {
                         RetainExcerpts::Dirty if !is_dirty => Vec::new(),
                         RetainExcerpts::All | RetainExcerpts::Dirty => multi_buffer
-                            .excerpts_for_buffer(buffer_id, cx)
+                            .snapshot(cx)
+                            .excerpts_for_buffer(buffer_id)
                             .into_iter()
-                            .map(|(_, range)| range)
                             .sorted_by(|a, b| cmp_excerpts(&buffer_snapshot, a, b))
                             .collect(),
                     }
@@ -621,7 +625,7 @@ impl ProjectDiagnosticsEditor {
                         });
                     })
                 }
-                let (anchor_ranges, _) = this.multibuffer.update(cx, |multi_buffer, cx| {
+                let (anchor_ranges, _, _) = this.multibuffer.update(cx, |multi_buffer, cx| {
                     let excerpt_ranges = excerpt_ranges
                         .into_iter()
                         .map(|range| ExcerptRange {

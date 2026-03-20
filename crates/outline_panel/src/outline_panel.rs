@@ -4,8 +4,8 @@ use anyhow::Context as _;
 use collections::{BTreeSet, HashMap, HashSet, hash_map};
 use db::kvp::KEY_VALUE_STORE;
 use editor::{
-    AnchorRangeExt, Bias, DisplayPoint, Editor, EditorEvent, ExcerptId, ExcerptRange,
-    MultiBufferSnapshot, RangeToAnchorExt, SelectionEffects,
+    AnchorRangeExt, Bias, DisplayPoint, Editor, EditorEvent, ExcerptRange, MultiBufferSnapshot,
+    RangeToAnchorExt, SelectionEffects,
     display_map::ToDisplayPoint,
     items::{entry_git_aware_label_color, entry_label_color},
     scroll::{Autoscroll, ScrollAnchor},
@@ -126,12 +126,12 @@ pub struct OutlinePanel {
     selected_entry: SelectedEntry,
     active_item: Option<ActiveItem>,
     _subscriptions: Vec<Subscription>,
-    new_entries_for_fs_update: HashSet<ExcerptId>,
+    new_entries_for_fs_update: HashSet<BufferId>,
     fs_entries_update_task: Task<()>,
     cached_entries_update_task: Task<()>,
     reveal_selection_task: Task<anyhow::Result<()>>,
     outline_fetch_tasks: HashMap<BufferId, Task<()>>,
-    excerpts: HashMap<BufferId, HashMap<ExcerptId, Excerpt>>,
+    excerpts: HashMap<BufferId, Vec<Excerpt>>,
     cached_entries: Vec<CachedEntry>,
     filter_editor: Entity<Editor>,
     mode: ItemsDisplayMode,
@@ -330,8 +330,8 @@ enum CollapsedEntry {
     Dir(WorktreeId, ProjectEntryId),
     File(WorktreeId, BufferId),
     ExternalFile(BufferId),
-    Excerpt(BufferId, ExcerptId),
-    Outline(BufferId, ExcerptId, Range<Anchor>),
+    Excerpt(BufferId, Range<Anchor>),
+    Outline(BufferId, Range<Anchor>),
 }
 
 #[derive(Debug)]
@@ -342,6 +342,7 @@ struct Excerpt {
 
 impl Excerpt {
     fn invalidate_outlines(&mut self) {
+        dbg!("hello???");
         if let ExcerptOutlines::Outlines(valid_outlines) = &mut self.outlines {
             self.outlines = ExcerptOutlines::Invalidated(std::mem::take(valid_outlines));
         }
@@ -534,22 +535,18 @@ impl SearchData {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct OutlineEntryExcerpt {
-    id: ExcerptId,
-    buffer_id: BufferId,
     range: ExcerptRange<language::Anchor>,
 }
 
 #[derive(Clone, Debug, Eq)]
 struct OutlineEntryOutline {
     buffer_id: BufferId,
-    excerpt_id: ExcerptId,
     outline: Outline,
 }
 
 impl PartialEq for OutlineEntryOutline {
     fn eq(&self, other: &Self) -> bool {
         self.buffer_id == other.buffer_id
-            && self.excerpt_id == other.excerpt_id
             && self.outline.depth == other.outline.depth
             && self.outline.range == other.outline.range
             && self.outline.text == other.outline.text
@@ -560,7 +557,6 @@ impl Hash for OutlineEntryOutline {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (
             self.buffer_id,
-            self.excerpt_id,
             self.outline.depth,
             &self.outline.range,
             &self.outline.text,
@@ -575,21 +571,12 @@ enum OutlineEntry {
     Outline(OutlineEntryOutline),
 }
 
-impl OutlineEntry {
-    fn ids(&self) -> (BufferId, ExcerptId) {
-        match self {
-            OutlineEntry::Excerpt(excerpt) => (excerpt.buffer_id, excerpt.id),
-            OutlineEntry::Outline(outline) => (outline.buffer_id, outline.excerpt_id),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Eq)]
 struct FsEntryFile {
     worktree_id: WorktreeId,
     entry: GitEntry,
     buffer_id: BufferId,
-    excerpts: Vec<ExcerptId>,
+    excerpts: Vec<ExcerptRange<language::Anchor>>,
 }
 
 impl PartialEq for FsEntryFile {
@@ -627,7 +614,7 @@ impl Hash for FsEntryDirectory {
 #[derive(Debug, Clone, Eq)]
 struct FsEntryExternalFile {
     buffer_id: BufferId,
-    excerpts: Vec<ExcerptId>,
+    excerpts: Vec<ExcerptRange<language::Anchor>>,
 }
 
 impl PartialEq for FsEntryExternalFile {
@@ -788,7 +775,7 @@ impl OutlinePanel {
                         outline_panel_settings = *new_settings;
                         current_theme = new_theme.clone();
                         for excerpts in outline_panel.excerpts.values_mut() {
-                            for excerpt in excerpts.values_mut() {
+                            for excerpt in excerpts.iter_mut() {
                                 excerpt.invalidate_outlines();
                             }
                         }
@@ -810,7 +797,7 @@ impl OutlinePanel {
                             let new_depth = new_settings.expand_outlines_with_depth;
 
                             for (buffer_id, excerpts) in &outline_panel.excerpts {
-                                for (excerpt_id, excerpt) in excerpts {
+                                for excerpt in excerpts {
                                     if let ExcerptOutlines::Outlines(outlines) = &excerpt.outlines {
                                         for outline in outlines {
                                             if outline_panel
@@ -828,7 +815,6 @@ impl OutlinePanel {
                                                 outline_panel.collapsed_entries.insert(
                                                     CollapsedEntry::Outline(
                                                         *buffer_id,
-                                                        *excerpt_id,
                                                         outline.range.clone(),
                                                     ),
                                                 );
@@ -872,7 +858,7 @@ impl OutlinePanel {
                         if new_document_symbols != document_symbols_by_buffer {
                             document_symbols_by_buffer = new_document_symbols;
                             for excerpts in outline_panel.excerpts.values_mut() {
-                                for excerpt in excerpts.values_mut() {
+                                for excerpt in excerpts.iter_mut() {
                                     excerpt.invalidate_outlines();
                                 }
                             }
@@ -1116,16 +1102,13 @@ impl OutlinePanel {
             PanelEntry::Fs(FsEntry::ExternalFile(file)) => {
                 change_selection = false;
                 scroll_to_buffer = Some(file.buffer_id);
-                multi_buffer_snapshot.excerpts().find_map(
-                    |(excerpt_id, buffer_snapshot, excerpt_range)| {
-                        if buffer_snapshot.remote_id() == file.buffer_id {
-                            multi_buffer_snapshot
-                                .buffer_anchor_to_anchor(excerpt_range.context.start)
-                        } else {
-                            None
-                        }
-                    },
-                )
+                multi_buffer_snapshot.excerpts().find_map(|excerpt_range| {
+                    if excerpt_range.context.start.buffer_id == file.buffer_id {
+                        multi_buffer_snapshot.buffer_anchor_to_anchor(excerpt_range.context.start)
+                    } else {
+                        None
+                    }
+                })
             }
 
             PanelEntry::Fs(FsEntry::File(file)) => {
@@ -1138,12 +1121,10 @@ impl OutlinePanel {
                             .and_then(|path| project.get_open_buffer(&path, cx))
                     })
                     .map(|buffer| {
-                        active_multi_buffer
-                            .read(cx)
-                            .excerpts_for_buffer(buffer.read(cx).remote_id(), cx)
+                        multi_buffer_snapshot.excerpts_for_buffer(buffer.read(cx).remote_id())
                     })
-                    .and_then(|excerpts| {
-                        let (excerpt_id, excerpt_range) = excerpts.first()?;
+                    .and_then(|mut excerpts| {
+                        let excerpt_range = excerpts.next()?;
                         multi_buffer_snapshot.buffer_anchor_to_anchor(excerpt_range.context.start)
                     })
             }
@@ -1363,12 +1344,13 @@ impl OutlinePanel {
                 PanelEntry::Outline(OutlineEntry::Excerpt(excerpt)) => {
                     previous_entries.find(|entry| match entry {
                         PanelEntry::Fs(FsEntry::File(file)) => {
-                            file.buffer_id == excerpt.buffer_id
-                                && file.excerpts.contains(&excerpt.id)
+                            // todo!() accessor for the buffer id
+                            file.buffer_id == excerpt.range.context.start.buffer_id
+                                && file.excerpts.contains(&excerpt.range)
                         }
                         PanelEntry::Fs(FsEntry::ExternalFile(external_file)) => {
-                            external_file.buffer_id == excerpt.buffer_id
-                                && external_file.excerpts.contains(&excerpt.id)
+                            external_file.buffer_id == excerpt.range.context.start.buffer_id
+                                && external_file.excerpts.contains(&excerpt.range)
                         }
                         _ => false,
                     })
@@ -1376,7 +1358,7 @@ impl OutlinePanel {
                 PanelEntry::Outline(OutlineEntry::Outline(outline)) => {
                     previous_entries.find(|entry| {
                         if let PanelEntry::Outline(OutlineEntry::Excerpt(excerpt)) = entry {
-                            outline.buffer_id == excerpt.buffer_id
+                            outline.buffer_id == excerpt.range.context.start.buffer_id
                                 && outline.excerpt_id == excerpt.id
                         } else {
                             false
@@ -1593,12 +1575,12 @@ impl OutlinePanel {
                 buffers_to_unfold.insert(external_file.buffer_id);
                 Some(CollapsedEntry::ExternalFile(external_file.buffer_id))
             }
-            PanelEntry::Outline(OutlineEntry::Excerpt(excerpt)) => {
-                Some(CollapsedEntry::Excerpt(excerpt.buffer_id, excerpt.id))
-            }
+            PanelEntry::Outline(OutlineEntry::Excerpt(excerpt)) => Some(CollapsedEntry::Excerpt(
+                excerpt.range.context.start.buffer_id,
+                excerpt.range.context.clone(),
+            )),
             PanelEntry::Outline(OutlineEntry::Outline(outline)) => Some(CollapsedEntry::Outline(
                 outline.buffer_id,
-                outline.excerpt_id,
                 outline.outline.range.clone(),
             )),
             PanelEntry::Search(_) => return,
@@ -1764,24 +1746,18 @@ impl OutlinePanel {
         }
 
         for (&buffer_id, excerpts) in &self.excerpts {
-            for (&excerpt_id, excerpt) in excerpts {
+            for excerpt in excerpts {
                 match &excerpt.outlines {
                     ExcerptOutlines::Outlines(outlines) => {
                         for outline in outlines {
-                            to_uncollapse.insert(CollapsedEntry::Outline(
-                                buffer_id,
-                                excerpt_id,
-                                outline.range.clone(),
-                            ));
+                            to_uncollapse
+                                .insert(CollapsedEntry::Outline(buffer_id, outline.range.clone()));
                         }
                     }
                     ExcerptOutlines::Invalidated(outlines) => {
                         for outline in outlines {
-                            to_uncollapse.insert(CollapsedEntry::Outline(
-                                buffer_id,
-                                excerpt_id,
-                                outline.range.clone(),
-                            ));
+                            to_uncollapse
+                                .insert(CollapsedEntry::Outline(buffer_id, outline.range.clone()));
                         }
                     }
                     ExcerptOutlines::NotFetched => {}
@@ -2307,12 +2283,7 @@ impl OutlinePanel {
         ))
     }
 
-    fn excerpt_label(
-        &self,
-        buffer_id: BufferId,
-        range: &ExcerptRange<language::Anchor>,
-        cx: &App,
-    ) -> Option<String> {
+    fn excerpt_label(&self, range: &ExcerptRange<language::Anchor>, cx: &App) -> Option<String> {
         let buffer_snapshot = self.buffer_snapshot_for_id(buffer_id, cx)?;
         let excerpt_range = range.context.to_point(&buffer_snapshot);
         Some(format!(
@@ -2362,7 +2333,6 @@ impl OutlinePanel {
             .unwrap_or(false);
         let is_expanded = !self.collapsed_entries.contains(&CollapsedEntry::Outline(
             outline.buffer_id,
-            outline.excerpt_id,
             outline.outline.range.clone(),
         ));
 
@@ -2791,7 +2761,7 @@ impl OutlinePanel {
             let mut new_collapsed_entries = HashSet::default();
             let mut new_unfolded_dirs = HashMap::default();
             let mut root_entries = HashSet::default();
-            let mut new_excerpts = HashMap::<BufferId, HashMap<ExcerptId, Excerpt>>::default();
+            let mut new_excerpts = HashMap::<BufferId, Vec<Excerpt>>::default();
             let Ok(buffer_excerpts) = outline_panel.update(cx, |outline_panel, cx| {
                 let git_store = outline_panel.project.read(cx).git_store().clone();
                 new_collapsed_entries = outline_panel.collapsed_entries.clone();
@@ -2800,7 +2770,12 @@ impl OutlinePanel {
 
                 multi_buffer_snapshot.excerpts().fold(
                     HashMap::default(),
-                    |mut buffer_excerpts, (excerpt_id, buffer_snapshot, excerpt_range)| {
+                    |mut buffer_excerpts, excerpt_range| {
+                        let Some(buffer_snapshot) = multi_buffer_snapshot
+                            .buffer_for_id(excerpt_range.context.start.buffer_id)
+                        else {
+                            return buffer_excerpts;
+                        };
                         let buffer_id = buffer_snapshot.remote_id();
                         let file = File::from_dyn(buffer_snapshot.file());
                         let entry_id = file.and_then(|file| file.project_entry_id());
@@ -2836,13 +2811,10 @@ impl OutlinePanel {
                             },
                             None => ExcerptOutlines::NotFetched,
                         };
-                        new_excerpts.entry(buffer_id).or_default().insert(
-                            excerpt_id,
-                            Excerpt {
-                                range: excerpt_range,
-                                outlines,
-                            },
-                        );
+                        new_excerpts.entry(buffer_id).or_default().push(Excerpt {
+                            range: excerpt_range,
+                            outlines,
+                        });
                         buffer_excerpts
                     },
                 )
@@ -3568,13 +3540,7 @@ impl OutlinePanel {
     fn excerpt_fetch_ranges(
         &self,
         cx: &App,
-    ) -> HashMap<
-        BufferId,
-        (
-            BufferSnapshot,
-            HashMap<ExcerptId, ExcerptRange<language::Anchor>>,
-        ),
-    > {
+    ) -> HashMap<BufferId, (BufferSnapshot, Vec<ExcerptRange<language::Anchor>>)> {
         self.fs_entries
             .iter()
             .fold(HashMap::default(), |mut excerpts_to_fetch, fs_entry| {
@@ -4336,7 +4302,6 @@ impl OutlinePanel {
         &mut self,
         state: &mut GenerationState,
         buffer_id: BufferId,
-        entries_to_add: &[ExcerptId],
         parent_depth: usize,
         track_matches: bool,
         is_singleton: bool,
@@ -4355,8 +4320,6 @@ impl OutlinePanel {
                     state,
                     track_matches,
                     PanelEntry::Outline(OutlineEntry::Excerpt(OutlineEntryExcerpt {
-                        buffer_id,
-                        id: excerpt_id,
                         range: excerpt.range.clone(),
                     })),
                     excerpt_depth,
@@ -4415,11 +4378,9 @@ impl OutlinePanel {
 
                     // Check if this outline itself is collapsed
                     if should_include
-                        && self.collapsed_entries.contains(&CollapsedEntry::Outline(
-                            buffer_id,
-                            excerpt_id,
-                            outline.range.clone(),
-                        ))
+                        && self
+                            .collapsed_entries
+                            .contains(&CollapsedEntry::Outline(buffer_id, outline.range.clone()))
                     {
                         collapsed_state = Some((outline.depth, outline.range.clone()));
                     }
@@ -4437,7 +4398,6 @@ impl OutlinePanel {
                 for outline in visible_outlines {
                     let outline_entry = OutlineEntryOutline {
                         buffer_id,
-                        excerpt_id,
                         outline: outline.clone(),
                     };
 
@@ -4482,7 +4442,7 @@ impl OutlinePanel {
             FsEntry::File(file) => &file.excerpts,
         }
         .iter()
-        .copied()
+        .cloned()
         .collect::<HashSet<_>>();
 
         let depth = if is_singleton { 0 } else { parent_depth + 1 };
@@ -4625,7 +4585,7 @@ impl OutlinePanel {
                     + folded_dirs.entries.len().saturating_sub(1) * "/".len()
             }
             PanelEntry::Outline(OutlineEntry::Excerpt(excerpt)) => self
-                .excerpt_label(excerpt.buffer_id, &excerpt.range, cx)
+                .excerpt_label(&excerpt.range, cx)
                 .map(|label| label.len())
                 .unwrap_or_default(),
             PanelEntry::Outline(OutlineEntry::Outline(entry)) => entry.outline.text.len(),
@@ -5317,7 +5277,7 @@ fn subscribe_for_editor_events(
                 }
                 EditorEvent::Reparsed(buffer_id) => {
                     if let Some(excerpts) = outline_panel.excerpts.get_mut(buffer_id) {
-                        for excerpt in excerpts.values_mut() {
+                        for excerpt in excerpts.iter_mut() {
                             excerpt.invalidate_outlines();
                         }
                     }
@@ -5328,7 +5288,7 @@ fn subscribe_for_editor_events(
                 }
                 EditorEvent::OutlineSymbolsChanged => {
                     for excerpts in outline_panel.excerpts.values_mut() {
-                        for excerpt in excerpts.values_mut() {
+                        for excerpt in excerpts.iter_mut() {
                             excerpt.invalidate_outlines();
                         }
                     }

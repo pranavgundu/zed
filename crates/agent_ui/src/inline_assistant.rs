@@ -26,8 +26,8 @@ use editor::RowExt;
 use editor::SelectionEffects;
 use editor::scroll::ScrollOffset;
 use editor::{
-    Anchor, AnchorRangeExt, CodeActionProvider, Editor, EditorEvent, ExcerptId, HighlightKey,
-    MultiBuffer, MultiBufferSnapshot, ToOffset as _, ToPoint,
+    Anchor, AnchorRangeExt, CodeActionProvider, Editor, EditorEvent, HighlightKey, MultiBuffer,
+    MultiBufferSnapshot, ToOffset as _, ToPoint,
     actions::SelectAll,
     display_map::{
         BlockContext, BlockPlacement, BlockProperties, BlockStyle, CustomBlockId, EditorMargins,
@@ -442,14 +442,15 @@ impl InlineAssistant {
         let newest_selection = newest_selection.unwrap();
 
         let mut codegen_ranges = Vec::new();
-        for (buffer, buffer_range, excerpt_id) in selections
+        for (buffer, buffer_range) in selections
             .iter()
-            .map(|selection| selection.range_to_buffer_range(selection.start..selection.end))
+            .flat_map(|selection| snapshot.range_to_buffer_ranges(selection.start..selection.end))
         {
-            let anchor_range = Anchor::range_in_buffer(
-                excerpt_id,
+            let Some(anchor_range) = snapshot.anchor_range_in_buffer_unchecked(
                 buffer.anchor_before(buffer_range.start)..buffer.anchor_after(buffer_range.end),
-            );
+            ) else {
+                continue;
+            };
 
             codegen_ranges.push(anchor_range);
 
@@ -980,8 +981,7 @@ impl InlineAssistant {
         match event {
             EditorEvent::Edited { transaction_id } => {
                 let buffer = editor.read(cx).buffer().read(cx);
-                let edited_ranges =
-                    buffer.edited_ranges_for_transaction::<MultiBufferOffset>(*transaction_id, cx);
+                let edited_ranges = buffer.edited_ranges_for_transaction(*transaction_id, cx);
                 let snapshot = buffer.snapshot(cx);
 
                 for assist_id in editor_assists.assist_ids.clone() {
@@ -1090,7 +1090,7 @@ impl InlineAssistant {
                         snapshot.range_to_buffer_ranges(assist.range.start..assist.range.end);
                     ranges
                         .first()
-                        .and_then(|(buffer, _, _)| buffer.language())
+                        .and_then(|(buffer, _)| buffer.language())
                         .map(|language| language.name().0.to_string())
                 });
 
@@ -1494,10 +1494,10 @@ impl InlineAssistant {
 
             let mut new_blocks = Vec::new();
             for (new_row, old_row_range) in deleted_row_ranges {
-                let (_, start, _) = old_snapshot
+                let (_, start) = old_snapshot
                     .point_to_buffer_point(Point::new(*old_row_range.start(), 0))
                     .unwrap();
-                let (_, end, _) = old_snapshot
+                let (_, end) = old_snapshot
                     .point_to_buffer_point(Point::new(
                         *old_row_range.end(),
                         old_snapshot.line_len(MultiBufferRow(*old_row_range.end())),

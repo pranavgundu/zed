@@ -2893,7 +2893,13 @@ pub mod tests {
                     .read(cx)
                     .buffer()
                     .read(cx)
-                    .excerpt_buffer_ids()[0]
+                    .snapshot(cx)
+                    .excerpts()
+                    .next()
+                    .unwrap()
+                    .context
+                    .start
+                    .buffer_id
             })
             .expect("should read buffer ids");
 

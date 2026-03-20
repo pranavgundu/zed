@@ -301,7 +301,7 @@ impl CodegenAlternative {
     ) -> Self {
         let snapshot = buffer.read(cx).snapshot(cx);
 
-        let (old_buffer, _, _) = snapshot
+        let (old_buffer, _) = snapshot
             .range_to_buffer_ranges(range.start..range.end)
             .pop()
             .unwrap();
@@ -686,7 +686,7 @@ impl CodegenAlternative {
             let ranges = snapshot.range_to_buffer_ranges(self.range.start..self.range.end);
             ranges
                 .first()
-                .and_then(|(buffer, _, _)| buffer.language())
+                .and_then(|(buffer, _)| buffer.language())
                 .map(|language| language.name())
         };
 

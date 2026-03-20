@@ -6,7 +6,7 @@ use anyhow::{Context as _, Result, anyhow};
 use assistant_slash_commands::{codeblock_fence_for_path, collect_diagnostics_output};
 use collections::{HashMap, HashSet};
 use editor::{
-    Anchor, Editor, EditorSnapshot, ExcerptId, FoldPlaceholder, ToOffset,
+    Anchor, Editor, EditorSnapshot, FoldPlaceholder, ToOffset,
     display_map::{Crease, CreaseId, CreaseMetadata, FoldId},
     scroll::Autoscroll,
 };
@@ -201,7 +201,6 @@ impl MentionSet {
         let Some(start_anchor) = snapshot.buffer_snapshot().buffer_anchor_to_anchor(start) else {
             return Task::ready(());
         };
-        let excerpt_id = start_anchor.excerpt_id;
         let end_anchor = snapshot.buffer_snapshot().anchor_before(
             start_anchor.to_offset(&snapshot.buffer_snapshot()) + content_len + 1usize,
         );
@@ -228,7 +227,6 @@ impl MentionSet {
                 })
                 .shared();
             insert_crease_for_mention(
-                excerpt_id,
                 start,
                 content_len,
                 mention_uri.name().into(),
@@ -240,7 +238,6 @@ impl MentionSet {
             )
         } else {
             insert_crease_for_mention(
-                excerpt_id,
                 start,
                 content_len,
                 crease_text,
@@ -660,19 +657,21 @@ pub(crate) async fn insert_images_as_context(
     let replacement_text = MentionUri::PastedImage.as_link().to_string();
 
     for image in images {
-        let Some((excerpt_id, text_anchor, multibuffer_anchor)) = editor
+        let Some((text_anchor, multibuffer_anchor)) = editor
             .update_in(cx, |editor, window, cx| {
                 let snapshot = editor.snapshot(window, cx);
-                let (excerpt_id, _, buffer_snapshot) =
-                    snapshot.buffer_snapshot().as_singleton().unwrap();
+                let buffer_snapshot = snapshot.buffer_snapshot().as_singleton().unwrap();
 
-                let cursor_anchor = editor.selections.newest_anchor().start.text_anchor;
+                let cursor_anchor = snapshot
+                    .buffer_snapshot()
+                    .anchor_to_buffer_anchor(editor.selections.newest_anchor().start)
+                    .unwrap();
                 let text_anchor = cursor_anchor.bias_left(&buffer_snapshot);
                 let multibuffer_anchor = snapshot
                     .buffer_snapshot()
                     .buffer_anchor_to_anchor(text_anchor);
                 editor.insert(&format!("{replacement_text} "), window, cx);
-                (excerpt_id, text_anchor, multibuffer_anchor)
+                (text_anchor, multibuffer_anchor)
             })
             .ok()
         else {
@@ -690,7 +689,6 @@ pub(crate) async fn insert_images_as_context(
         let image = Arc::new(image);
         let Ok(Some((crease_id, tx))) = cx.update(|window, cx| {
             insert_crease_for_mention(
-                excerpt_id,
                 text_anchor,
                 content_len,
                 MentionUri::PastedImage.name().into(),
@@ -800,7 +798,6 @@ pub(crate) fn paste_images_as_context(
 }
 
 pub(crate) fn insert_crease_for_mention(
-    excerpt_id: ExcerptId,
     anchor: text::Anchor,
     content_len: usize,
     crease_label: SharedString,

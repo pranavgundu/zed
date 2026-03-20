@@ -62,7 +62,7 @@ impl GoToLine {
                     return;
                 };
                 let editor = editor_handle.read(cx);
-                let Some((_, buffer, _)) = editor.active_excerpt(cx) else {
+                let Some(buffer) = editor.active_buffer(cx) else {
                     return;
                 };
                 workspace.update(cx, |workspace, cx| {
@@ -92,9 +92,10 @@ impl GoToLine {
             let last_line = editor
                 .buffer()
                 .read(cx)
-                .excerpts_for_buffer(snapshot.remote_id(), cx)
+                .snapshot(cx)
+                .excerpts_for_buffer(snapshot.remote_id())
                 .into_iter()
-                .map(move |(_, range)| text::ToPoint::to_point(&range.context.end, &snapshot).row)
+                .map(move |range| text::ToPoint::to_point(&range.context.end, &snapshot).row)
                 .max()
                 .unwrap_or(0);
 

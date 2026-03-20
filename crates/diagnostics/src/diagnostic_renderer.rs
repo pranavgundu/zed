@@ -290,23 +290,12 @@ impl DiagnosticBlock {
                 .nth(ix)
             {
                 let multibuffer = editor.buffer().read(cx);
-                let Some(snapshot) = multibuffer
-                    .buffer(buffer_id)
-                    .map(|entity| entity.read(cx).snapshot())
-                else {
+                if let Some(anchor_range) = multibuffer
+                    .snapshot(cx)
+                    .anchor_range_in_buffer(diagnostic.range)
+                {
+                    Self::jump_to(editor, anchor_range, window, cx);
                     return;
-                };
-
-                for (excerpt_id, range) in multibuffer.excerpts_for_buffer(buffer_id, cx) {
-                    if range.context.overlaps(&diagnostic.range, &snapshot) {
-                        Self::jump_to(
-                            editor,
-                            Anchor::range_in_buffer(excerpt_id, diagnostic.range),
-                            window,
-                            cx,
-                        );
-                        return;
-                    }
                 }
             }
         } else if let Some(diagnostic) = editor

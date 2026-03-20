@@ -2597,7 +2597,8 @@ impl ReferenceMultibuffer {
                                     (offset..hunk_base_range.start).to_point(&buffer),
                                 ),
                                 status: None,
-                                excerpt_range: Some(excerpt.range),
+                                excerpt_range: Some(excerpt.range.clone()),
+                                excerpt_path_key_index: Some(excerpt.path_key_index),
                             });
                         }
                     }
@@ -2611,7 +2612,7 @@ impl ReferenceMultibuffer {
                             range: len..text.len(),
                             buffer_range: Some(hunk_base_range.to_point(&buffer)),
                             status: Some(DiffHunkStatus::deleted(hunk.secondary_status)),
-                            excerpt_range: Some(excerpt.range),
+                            excerpt_range: Some(excerpt.range.clone()),
                             excerpt_path_key_index: Some(excerpt.path_key_index),
                         });
                     }
@@ -2628,7 +2629,7 @@ impl ReferenceMultibuffer {
                     range: len..text.len(),
                     buffer_range: Some((offset..buffer_range.end).to_point(&buffer)),
                     status: None,
-                    excerpt_range: Some(excerpt.range),
+                    excerpt_range: Some(excerpt.range.clone()),
                     excerpt_path_key_index: Some(excerpt.path_key_index),
                 });
             } else {
@@ -2682,7 +2683,7 @@ impl ReferenceMultibuffer {
                                 range: len..text.len(),
                                 buffer_range: Some((offset..hunk_range.start).to_point(&buffer)),
                                 status: None,
-                                excerpt_range: Some(excerpt.range),
+                                excerpt_range: Some(excerpt.range.clone()),
                                 excerpt_path_key_index: Some(excerpt.path_key_index),
                             });
                         }
@@ -2704,7 +2705,7 @@ impl ReferenceMultibuffer {
                                     hunk.diff_base_byte_range.to_point(&base_buffer),
                                 ),
                                 status: Some(DiffHunkStatus::deleted(hunk.secondary_status)),
-                                excerpt_range: Some(excerpt.range),
+                                excerpt_range: Some(excerpt.range.clone()),
                                 excerpt_path_key_index: Some(excerpt.path_key_index),
                             });
                         }
@@ -2722,7 +2723,7 @@ impl ReferenceMultibuffer {
                             range,
                             buffer_range: Some((offset..hunk_range.end).to_point(&buffer)),
                             status: Some(DiffHunkStatus::added(hunk.secondary_status)),
-                            excerpt_range: Some(excerpt.range),
+                            excerpt_range: Some(excerpt.range.clone()),
                             excerpt_path_key_index: Some(excerpt.path_key_index),
                         };
                         offset = hunk_range.end;
@@ -2739,7 +2740,7 @@ impl ReferenceMultibuffer {
                     range: len..text.len(),
                     buffer_range: Some((offset..buffer_range.end).to_point(&buffer)),
                     status: None,
-                    excerpt_range: Some(excerpt.range),
+                    excerpt_range: Some(excerpt.range.clone()),
                     excerpt_path_key_index: Some(excerpt.path_key_index),
                 });
             }

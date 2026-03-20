@@ -18,6 +18,7 @@ use gpui::{
     Global, SharedString, Subscription, Task, WeakEntity, Window, prelude::*,
 };
 
+use itertools::Itertools as _;
 use language::{Buffer, Capability, OffsetRangeExt, Point};
 use multi_buffer::PathKey;
 use project::{Project, ProjectItem, ProjectPath};
@@ -141,11 +142,12 @@ impl AgentDiffPane {
             path_a.cmp(&path_b)
         });
 
-        let mut paths_to_delete = self
+        let mut buffers_to_delete = self
             .multibuffer
             .read(cx)
-            .paths()
-            .cloned()
+            .snapshot(cx)
+            .excerpts()
+            .map(|excerpt| excerpt.context.start.buffer_id)
             .collect::<HashSet<_>>();
 
         for (buffer, diff_handle) in sorted_buffers {
@@ -154,7 +156,7 @@ impl AgentDiffPane {
             }
 
             let path_key = PathKey::for_buffer(&buffer, cx);
-            paths_to_delete.remove(&path_key);
+            buffers_to_delete.remove(&buffer.read(cx).remote_id());
 
             let snapshot = buffer.read(cx).snapshot();
 
@@ -211,8 +213,8 @@ impl AgentDiffPane {
         }
 
         self.multibuffer.update(cx, |multibuffer, cx| {
-            for path in paths_to_delete {
-                multibuffer.remove_excerpts(path, cx);
+            for buffer_id in buffers_to_delete {
+                multibuffer.remove_excerpts_for_buffer(buffer_id, cx);
             }
         });
 

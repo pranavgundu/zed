@@ -224,7 +224,7 @@ impl CommitView {
                         .buffer()
                         .read(cx)
                         .buffer_anchor_to_anchor(
-                            Anchor::max_for_buffer(&message_buffer.read(cx).remote_id()),
+                            Anchor::max_for_buffer(message_buffer.read(cx).remote_id()),
                             cx,
                         )
                         .map(|anchor| BlockProperties {
@@ -422,8 +422,11 @@ impl CommitView {
         let mut total_deletions = 0u32;
 
         let mut seen_buffers = std::collections::HashSet::new();
-        for (_, buffer, _) in snapshot.excerpts() {
-            let buffer_id = buffer.remote_id();
+        for excerpt in snapshot.excerpts() {
+            let buffer_id = excerpt.context.start.buffer_id;
+            let Some(buffer) = snapshot.buffer_for_id(buffer_id) else {
+                continue;
+            };
             if !seen_buffers.insert(buffer_id) {
                 continue;
             }
@@ -435,7 +438,7 @@ impl CommitView {
             let base_text = diff.base_text();
 
             for hunk in
-                diff.hunks_intersecting_range(Anchor::min_max_range_for_buffer(buffer_id), buffer)
+                diff.hunks_intersecting_range(Anchor::min_max_range_for_buffer(buffer_id), &buffer)
             {
                 let added_rows = hunk.range.end.row.saturating_sub(hunk.range.start.row);
                 total_additions += added_rows;

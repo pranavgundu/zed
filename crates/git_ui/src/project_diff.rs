@@ -504,7 +504,7 @@ impl ProjectDiff {
     pub fn active_path(&self, cx: &App) -> Option<ProjectPath> {
         let editor = self.editor.read(cx).focused_editor().read(cx);
         let position = editor.selections.newest_anchor().head();
-        let buffer = editor.buffer().read(cx).buffer_for_anchor(position, cx);
+        let buffer = editor.buffer().read(cx).buffer_for_anchor(position, cx)?;
 
         let file = buffer.read(cx).file()?;
         Some(ProjectPath {
@@ -546,8 +546,11 @@ impl ProjectDiff {
         let mut total_deletions = 0u32;
 
         let mut seen_buffers = HashSet::default();
-        for (_, buffer, _) in snapshot.excerpts() {
-            let buffer_id = buffer.remote_id();
+        for excerpt_range in snapshot.excerpts() {
+            let buffer_id = excerpt_range.context.start.buffer_id;
+            let Some(buffer) = snapshot.buffer_for_id(buffer_id) else {
+                continue;
+            };
             if !seen_buffers.insert(buffer_id) {
                 continue;
             }
@@ -559,7 +562,7 @@ impl ProjectDiff {
             let base_text = diff.base_text();
 
             for hunk in
-                diff.hunks_intersecting_range(Anchor::min_max_range_for_buffer(buffer_id), buffer)
+                diff.hunks_intersecting_range(Anchor::min_max_range_for_buffer(buffer_id), &buffer)
             {
                 let added_rows = hunk.range.end.row.saturating_sub(hunk.range.start.row);
                 total_additions += added_rows;
@@ -599,17 +602,15 @@ impl ProjectDiff {
             .collect::<Vec<_>>();
         if !ranges.iter().any(|range| range.start != range.end) {
             selection = false;
-            if let Some((excerpt_id, _, range)) = self
-                .editor
-                .read(cx)
-                .rhs_editor()
-                .read(cx)
-                .active_excerpt(cx)
+            let anchor = editor.selections.newest_anchor().head();
+            if let Some((_, excerpt_range)) = snapshot.excerpt_for_position(anchor)
+                && let Some(range) =
+                    snapshot.anchor_range_in_buffer_unchecked(excerpt_range.context)
             {
-                ranges = vec![multi_buffer::Anchor::range_in_buffer(excerpt_id, range)];
+                ranges = vec![range];
             } else {
                 ranges = Vec::default();
-            }
+            };
         }
         let mut has_staged_hunks = false;
         let mut has_unstaged_hunks = false;
@@ -2482,9 +2483,15 @@ mod tests {
 
         cx.update(|window, cx| {
             let editor = diff.read(cx).editor.read(cx).rhs_editor().clone();
-            let excerpt_ids = editor.read(cx).buffer().read(cx).excerpt_ids();
-            assert_eq!(excerpt_ids.len(), 1);
-            let excerpt_id = excerpt_ids[0];
+            let excerpts = editor
+                .read(cx)
+                .buffer()
+                .read(cx)
+                .snapshot(cx)
+                .excerpts()
+                .collect::<Vec<_>>();
+            assert_eq!(excerpts.len(), 1);
+            let excerpt = excerpts[0].clone();
             let buffer = editor
                 .read(cx)
                 .buffer()
@@ -2512,7 +2519,6 @@ mod tests {
 
             resolve_conflict(
                 editor.downgrade(),
-                excerpt_id,
                 snapshot.conflicts[0].clone(),
                 vec![ours_range],
                 window,

@@ -1,7 +1,7 @@
 use collections::{HashMap, HashSet};
 use editor::{
     ConflictsOurs, ConflictsOursMarker, ConflictsOuter, ConflictsTheirs, ConflictsTheirsMarker,
-    Editor, EditorEvent, ExcerptId, MultiBuffer, RowHighlightOptions,
+    Editor, EditorEvent, MultiBuffer, RowHighlightOptions,
     display_map::{BlockContext, BlockPlacement, BlockProperties, BlockStyle, CustomBlockId},
 };
 use gpui::{
@@ -179,10 +179,10 @@ fn conflicts_updated(
     let conflict_set = conflict_set.read(cx).snapshot();
     let multibuffer = editor.buffer().read(cx);
     let snapshot = multibuffer.snapshot(cx);
-    let excerpts = multibuffer.excerpts_for_buffer(buffer_id, cx);
+    let excerpts = snapshot.excerpts_for_buffer(buffer_id);
     let Some(buffer_snapshot) = excerpts
-        .first()
-        .and_then(|(excerpt_id, _)| snapshot.buffer_for_excerpt(*excerpt_id))
+        .next()
+        .and_then(|range| snapshot.buffer_for_id(range.context.start.buffer_id))
     else {
         return;
     };
@@ -280,7 +280,7 @@ fn conflicts_updated(
         };
         let excerpt_id = *excerpt_id;
 
-        update_conflict_highlighting(editor, conflict, &snapshot, excerpt_id, cx);
+        update_conflict_highlighting(editor, conflict, &snapshot, buffer_id, cx);
 
         let Some(anchor) = snapshot.buffer_anchor_to_anchor(conflict.range.start) else {
             continue;
@@ -319,7 +319,6 @@ fn update_conflict_highlighting(
     editor: &mut Editor,
     conflict: &ConflictRegion,
     buffer: &editor::MultiBufferSnapshot,
-    excerpt_id: editor::ExcerptId,
     cx: &mut Context<Editor>,
 ) -> Option<()> {
     log::debug!("update conflict highlighting for {conflict:?}");
@@ -364,7 +363,6 @@ fn update_conflict_highlighting(
 
 fn render_conflict_buttons(
     conflict: &ConflictRegion,
-    excerpt_id: ExcerptId,
     editor: WeakEntity<Editor>,
     cx: &mut BlockContext,
 ) -> AnyElement {
@@ -440,7 +438,6 @@ fn render_conflict_buttons(
 
 pub(crate) fn resolve_conflict(
     editor: WeakEntity<Editor>,
-    excerpt_id: ExcerptId,
     resolved_conflict: ConflictRegion,
     ranges: Vec<Range<Anchor>>,
     window: &mut Window,
@@ -452,7 +449,7 @@ pub(crate) fn resolve_conflict(
                 let workspace = editor.workspace()?;
                 let project = editor.project()?.clone();
                 let multibuffer = editor.buffer().clone();
-                let buffer_id = resolved_conflict.ours.end.buffer_id?;
+                let buffer_id = resolved_conflict.ours.end.buffer_id;
                 let buffer = multibuffer.read(cx).buffer(buffer_id)?;
                 resolved_conflict.resolve(buffer.clone(), &ranges, cx);
                 let conflict_addon = editor.addon_mut::<ConflictAddon>().unwrap();

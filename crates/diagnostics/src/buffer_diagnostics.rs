@@ -480,7 +480,7 @@ impl BufferDiagnosticsEditor {
                     })
                 });
 
-                let (anchor_ranges, _) =
+                let (anchor_ranges, _, _) =
                     buffer_diagnostics_editor
                         .multibuffer
                         .update(cx, |multibuffer, cx| {

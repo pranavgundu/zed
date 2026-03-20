@@ -532,13 +532,14 @@ impl TextThreadEditor {
         }
 
         let selections = self.editor.read(cx).selections.disjoint_anchors_arc();
+        let snapshot = self.editor.read(cx).buffer().read(cx).snapshot(cx);
         let mut commands_by_range = HashMap::default();
         let workspace = self.workspace.clone();
         self.text_thread.update(cx, |text_thread, cx| {
             text_thread.reparse(cx);
             for selection in selections.iter() {
-                if let Some(command) =
-                    text_thread.pending_command_for_position(selection.head().text_anchor, cx)
+                if let Some(anchor) = snapshot.anchor_to_buffer_anchor(selection.head())
+                    && let Some(command) = text_thread.pending_command_for_position(anchor, cx)
                 {
                     commands_by_range
                         .entry(command.source_range.clone())
@@ -688,7 +689,6 @@ impl TextThreadEditor {
             TextThreadEvent::ParsedSlashCommandsUpdated { removed, updated } => {
                 self.editor.update(cx, |editor, cx| {
                     let buffer = editor.buffer().read(cx).snapshot(cx);
-                    let (excerpt_id, _, _) = buffer.as_singleton().unwrap();
 
                     editor.remove_creases(
                         removed
@@ -811,7 +811,6 @@ impl TextThreadEditor {
             {
                 if let InvokedSlashCommandStatus::Finished = invoked_slash_command.status {
                     let buffer = editor.buffer().read(cx).snapshot(cx);
-                    let (excerpt_id, _buffer_id, _buffer_snapshot) = buffer.as_singleton().unwrap();
 
                     let range = buffer
                         .anchor_range_in_buffer(invoked_slash_command.range.clone())
@@ -831,7 +830,6 @@ impl TextThreadEditor {
                     self.invoked_slash_command_creases.entry(command_id)
                 {
                     let buffer = editor.buffer().read(cx).snapshot(cx);
-                    let (excerpt_id, _buffer_id, _buffer_snapshot) = buffer.as_singleton().unwrap();
                     let context = self.text_thread.downgrade();
                     let range = buffer
                         .anchor_range_in_buffer(invoked_slash_command.range.clone())
@@ -871,7 +869,6 @@ impl TextThreadEditor {
     ) -> Vec<CreaseId> {
         self.editor.update(cx, |editor, cx| {
             let buffer = editor.buffer().read(cx).snapshot(cx);
-            let excerpt_id = buffer.as_singleton().unwrap().0;
             let mut buffer_rows_to_fold = BTreeSet::new();
             let mut creases = Vec::new();
             for (section, status) in sections {
@@ -918,7 +915,6 @@ impl TextThreadEditor {
     ) {
         self.editor.update(cx, |editor, cx| {
             let buffer = editor.buffer().read(cx).snapshot(cx);
-            let excerpt_id = buffer.as_singleton().unwrap().0;
             let mut buffer_rows_to_fold = BTreeSet::new();
             let mut creases = Vec::new();
             for section in sections {
@@ -1047,7 +1043,6 @@ impl TextThreadEditor {
         self.editor.update(cx, |editor, cx| {
             let buffer = editor.buffer().read(cx).snapshot(cx);
 
-            let excerpt_id = buffer.as_singleton().unwrap().0;
             let mut old_blocks = std::mem::take(&mut self.blocks);
             let mut blocks_to_remove: HashMap<_, _> = old_blocks
                 .iter()
@@ -1292,7 +1287,7 @@ impl TextThreadEditor {
                 .is_empty()
             {
                 let snapshot = text_thread_editor.buffer().read(cx).snapshot(cx);
-                let (_, _, snapshot) = snapshot.as_singleton()?;
+                let snapshot = snapshot.as_singleton()?;
 
                 let head = text_thread_editor
                     .selections
@@ -1991,7 +1986,11 @@ impl TextThreadEditor {
                         .selections
                         .all::<MultiBufferOffset>(&editor.display_snapshot(cx))
                     {
-                        image_positions.push(snapshot.anchor_before(selection.end));
+                        if let Some(text_anchor) =
+                            snapshot.anchor_to_buffer_anchor(snapshot.anchor_before(selection.end))
+                        {
+                            image_positions.push(text_anchor);
+                        }
                     }
                 });
             });
@@ -2008,7 +2007,7 @@ impl TextThreadEditor {
                     for image_position in image_positions.iter() {
                         text_thread.insert_content(
                             Content::Image {
-                                anchor: image_position.text_anchor,
+                                anchor: *image_position,
                                 image_id,
                                 image: image_task.clone(),
                                 render_image: render_image.clone(),
@@ -2030,7 +2029,6 @@ impl TextThreadEditor {
     fn update_image_blocks(&mut self, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
             let buffer = editor.buffer().read(cx).snapshot(cx);
-            let excerpt_id = buffer.as_singleton().unwrap().0;
             let old_blocks = std::mem::take(&mut self.image_blocks);
             let new_blocks = self
                 .text_thread

@@ -7,8 +7,8 @@ use anyhow::Result;
 use collections::HashMap;
 use dap::{CompletionItem, CompletionItemType, OutputEvent};
 use editor::{
-    Bias, CompletionProvider, Editor, EditorElement, EditorMode, EditorStyle, ExcerptId,
-    HighlightKey, MultiBufferOffset, SizingBehavior,
+    Bias, CompletionProvider, Editor, EditorElement, EditorMode, EditorStyle, HighlightKey,
+    MultiBufferOffset, SizingBehavior,
 };
 use fuzzy::StringMatchCandidate;
 use gpui::{

@@ -2,7 +2,7 @@ use crate::text_thread_editor::TextThreadEditor;
 use anyhow::Result;
 pub use assistant_slash_command::SlashCommand;
 use assistant_slash_command::{AfterCompletion, SlashCommandLine, SlashCommandWorkingSet};
-use editor::{CompletionProvider, Editor, ExcerptId};
+use editor::{CompletionProvider, Editor};
 use fuzzy::{StringMatchCandidate, match_strings};
 use gpui::{App, AppContext as _, Context, Entity, Task, WeakEntity, Window};
 use language::{Anchor, Buffer, ToPoint};
