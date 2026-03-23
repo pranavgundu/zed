@@ -324,7 +324,10 @@ fn cancel_flycheck_action(
         .disjoint_anchors_arc()
         .iter()
         .find_map(|selection| {
-            let buffer_id = multibuffer_snapshot.buffer_id_for_anchor(selection.start)?;
+            let buffer_id = multibuffer_snapshot
+                .anchor_to_buffer_anchor(selection.start)?
+                .0
+                .buffer_id;
             let project = project.read(cx);
             let entry_id = project
                 .buffer_for_id(buffer_id, cx)?
@@ -352,7 +355,10 @@ fn run_flycheck_action(
         .disjoint_anchors_arc()
         .iter()
         .find_map(|selection| {
-            let buffer_id = multibuffer_snapshot.buffer_id_for_anchor(selection.head())?;
+            let buffer_id = multibuffer_snapshot
+                .anchor_to_buffer_anchor(selection.head())?
+                .0
+                .buffer_id;
             let project = project.read(cx);
             let entry_id = project
                 .buffer_for_id(buffer_id, cx)?
@@ -380,7 +386,10 @@ fn clear_flycheck_action(
         .disjoint_anchors_arc()
         .iter()
         .find_map(|selection| {
-            let buffer_id = multibuffer_snapshot.buffer_id_for_anchor(selection.head())?;
+            let buffer_id = multibuffer_snapshot
+                .anchor_to_buffer_anchor(selection.head())?
+                .0
+                .buffer_id;
             let project = project.read(cx);
             let entry_id = project
                 .buffer_for_id(buffer_id, cx)?

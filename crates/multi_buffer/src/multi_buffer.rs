@@ -6455,15 +6455,6 @@ impl MultiBufferSnapshot {
         ))
     }
 
-    // FIXME delete this
-    pub fn buffer_id_for_anchor(&self, anchor: Anchor) -> Option<BufferId> {
-        match anchor {
-            Anchor::Min => self.excerpts.first().map(|excerpt| excerpt.buffer_id),
-            Anchor::Excerpt(excerpt_anchor) => Some(excerpt_anchor.text_anchor.buffer_id),
-            Anchor::Max => self.excerpts.last().map(|excerpt| excerpt.buffer_id),
-        }
-    }
-
     pub fn selections_in_range<'a>(
         &'a self,
         range: &'a Range<Anchor>,

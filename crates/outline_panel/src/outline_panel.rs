@@ -4389,13 +4389,13 @@ impl OutlinePanel {
             }) {
                 return false;
             };
-            if let Some(buffer_id) = snapshot.buffer_id_for_anchor(match_range.start)
-                && editor.is_buffer_folded(buffer_id, cx)
+            if let Some((buffer_anchor, _)) = snapshot.anchor_to_buffer_anchor(match_range.start)
+                && editor.is_buffer_folded(buffer_anchor.buffer_id, cx)
             {
                 return false;
             }
-            if let Some(buffer_id) = snapshot.buffer_id_for_anchor(match_range.end)
-                && editor.is_buffer_folded(buffer_id, cx)
+            if let Some((buffer_anchor, _)) = snapshot.anchor_to_buffer_anchor(match_range.end)
+                && editor.is_buffer_folded(buffer_anchor.buffer_id, cx)
             {
                 return false;
             }

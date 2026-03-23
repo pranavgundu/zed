@@ -658,10 +658,10 @@ impl<'snap, 'a> MutableSelectionsCollection<'snap, 'a> {
             self.disjoint
                 .iter()
                 .filter(|selection| {
-                    if let Some(selection_buffer_id) =
-                        self.snapshot.buffer_id_for_anchor(selection.start)
+                    if let Some((selection_buffer_anchor, _)) =
+                        self.snapshot.anchor_to_buffer_anchor(selection.start)
                     {
-                        let should_remove = selection_buffer_id == buffer_id;
+                        let should_remove = selection_buffer_anchor.buffer_id == buffer_id;
                         changed |= should_remove;
                         !should_remove
                     } else {

@@ -3571,8 +3571,8 @@ impl Editor {
         }
 
         if local {
-            if let Some(buffer_id) = buffer.buffer_id_for_anchor(new_cursor_position) {
-                self.register_buffer(buffer_id, cx);
+            if let Some((anchor, _)) = buffer.anchor_to_buffer_anchor(new_cursor_position) {
+                self.register_buffer(anchor.buffer_id, cx);
             }
 
             let mut context_menu = self.context_menu.borrow_mut();
@@ -17662,9 +17662,10 @@ impl Editor {
         };
 
         let next_diagnostic_start = buffer.anchor_after(next_diagnostic.range.start);
-        let Some(buffer_id) = buffer.buffer_id_for_anchor(next_diagnostic_start) else {
+        let Some((buffer_anchor, _)) = buffer.anchor_to_buffer_anchor(next_diagnostic_start) else {
             return;
         };
+        let buffer_id = buffer_anchor.buffer_id;
         let snapshot = self.snapshot(window, cx);
         if snapshot.intersects_fold(next_diagnostic.range.start) {
             self.unfold_ranges(
