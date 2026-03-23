@@ -2491,7 +2491,7 @@ impl Project {
         path: ProjectPath,
         trash: bool,
         cx: &mut Context<Self>,
-    ) -> Option<Task<Result<()>>> {
+    ) -> Option<Task<Result<Option<TrashedEntry>>>> {
         let entry = self.entry_for_path(&path, cx)?;
         self.delete_entry(entry.id, trash, cx)
     }
@@ -2502,7 +2502,7 @@ impl Project {
         entry_id: ProjectEntryId,
         trash: bool,
         cx: &mut Context<Self>,
-    ) -> Option<Task<Result<()>>> {
+    ) -> Option<Task<Result<Option<TrashedEntry>>>> {
         let worktree = self.worktree_for_entry(entry_id, cx)?;
         cx.emit(Event::DeletedEntry(worktree.read(cx).id(), entry_id));
         worktree.update(cx, |worktree, cx| {

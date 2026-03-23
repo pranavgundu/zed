@@ -2205,7 +2205,10 @@ fn randomly_mutate_worktree(
     match rng.random_range(0_u32..100) {
         0..=33 if entry.path.as_ref() != RelPath::empty() => {
             log::info!("deleting entry {:?} ({})", entry.path, entry.id.to_usize());
-            worktree.delete_entry(entry.id, false, cx).unwrap()
+            worktree
+                .delete_entry(entry.id, false, cx)
+                .map(|_| Task::ready(Ok(())))
+                .unwrap()
         }
         _ => {
             if entry.is_dir() {

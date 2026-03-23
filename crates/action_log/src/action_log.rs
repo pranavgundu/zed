@@ -778,7 +778,9 @@ impl ActionLog {
                             .entry_id(cx)
                             .and_then(|entry_id| {
                                 self.project.update(cx, |project, cx| {
-                                    project.delete_entry(entry_id, false, cx)
+                                    project
+                                        .delete_entry(entry_id, false, cx)
+                                        .map(|_| Task::ready(Ok(())))
                                 })
                             })
                             .unwrap_or(Task::ready(Ok(())))
