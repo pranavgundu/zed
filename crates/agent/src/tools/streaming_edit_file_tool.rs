@@ -89,7 +89,11 @@ pub struct StreamingEditFileToolInput {
 
     /// List of edit operations to apply sequentially (required for 'edit' mode).
     /// Each edit finds `old_text` in the file and replaces it with `new_text`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_edits_maybe_stringified"
+    )]
     pub edits: Option<Vec<Edit>>,
 }
 
@@ -116,6 +120,29 @@ pub struct Edit {
     pub old_text: String,
     /// The text to replace it with
     pub new_text: String,
+}
+
+fn deserialize_edits_maybe_stringified<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<Edit>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrArray {
+        Array(Vec<Edit>),
+        Stringified(String),
+    }
+
+    match Option::<StringOrArray>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(StringOrArray::Array(edits)) => Ok(Some(edits)),
+        Some(StringOrArray::Stringified(s)) => {
+            let edits: Vec<Edit> = serde_json::from_str(&s).map_err(serde::de::Error::custom)?;
+            Ok(Some(edits))
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug, Deserialize)]
@@ -3906,6 +3933,51 @@ mod tests {
             !fs.is_file(path!("/root/dir/new_file.txt").as_ref()).await,
             "file should be deleted after rejecting creation, but an empty file was left behind"
         );
+    }
+
+    #[test]
+    fn test_deserialize_edits_from_array() {
+        let input: StreamingEditFileToolInput = serde_json::from_value(json!({
+            "display_description": "Fix bug",
+            "path": "src/main.rs",
+            "mode": "edit",
+            "edits": [
+                {"old_text": "foo", "new_text": "bar"}
+            ]
+        }))
+        .unwrap();
+        let edits = input.edits.unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].old_text, "foo");
+        assert_eq!(edits[0].new_text, "bar");
+    }
+
+    // Regression test for the tool creating stringified arrays despite it not being asked to
+    #[test]
+    fn test_deserialize_edits_from_stringified_array() {
+        let input: StreamingEditFileToolInput = serde_json::from_value(json!({
+            "display_description": "Fix bug",
+            "path": "src/main.rs",
+            "mode": "edit",
+            "edits": r#"[{"old_text": "foo", "new_text": "bar"}]"#
+        }))
+        .unwrap();
+        let edits = input.edits.unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].old_text, "foo");
+        assert_eq!(edits[0].new_text, "bar");
+    }
+
+    #[test]
+    fn test_deserialize_edits_null() {
+        let input: StreamingEditFileToolInput = serde_json::from_value(json!({
+            "display_description": "Create file",
+            "path": "src/main.rs",
+            "mode": "write",
+            "content": "hello"
+        }))
+        .unwrap();
+        assert!(input.edits.is_none());
     }
 
     async fn setup_test_with_fs(
