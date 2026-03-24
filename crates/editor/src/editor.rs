@@ -7067,15 +7067,21 @@ impl Editor {
                     .read(cx)
                     .edited_ranges_for_transaction::<Point>(transaction)
                     .collect::<Vec<_>>();
-                let (ranges, _) = multibuffer.set_excerpts_for_path(
+                multibuffer.set_excerpts_for_path(
                     PathKey::for_buffer(buffer_handle, cx),
                     buffer_handle.clone(),
-                    edited_ranges,
+                    edited_ranges.clone(),
                     multibuffer_context_lines(cx),
                     cx,
                 );
-
-                ranges_to_highlight.extend(ranges);
+                let snapshot = multibuffer.snapshot(cx);
+                let buffer_snapshot = buffer_handle.read(cx).snapshot();
+                ranges_to_highlight.extend(edited_ranges.into_iter().filter_map(|range| {
+                    let text_range = buffer_snapshot.anchor_range_inside(range);
+                    let start = snapshot.anchor_in_buffer_unchecked(text_range.start)?;
+                    let end = snapshot.anchor_in_buffer_unchecked(text_range.end)?;
+                    Some(start..end)
+                }));
             }
             multibuffer.push_transaction(entries.iter().map(|(b, t)| (b, t)), cx);
             multibuffer
@@ -18739,14 +18745,21 @@ impl Editor {
             for (buffer, mut ranges_for_buffer) in locations {
                 ranges_for_buffer.sort_by_key(|range| (range.start, Reverse(range.end)));
                 key.push((buffer.read(cx).remote_id(), ranges_for_buffer.clone()));
-                let (new_ranges, _) = multibuffer.set_excerpts_for_path(
+                multibuffer.set_excerpts_for_path(
                     PathKey::for_buffer(&buffer, cx),
                     buffer.clone(),
-                    ranges_for_buffer,
+                    ranges_for_buffer.clone(),
                     multibuffer_context_lines(cx),
                     cx,
                 );
-                ranges.extend(new_ranges)
+                let snapshot = multibuffer.snapshot(cx);
+                let buffer_snapshot = buffer.read(cx).snapshot();
+                ranges.extend(ranges_for_buffer.into_iter().filter_map(|range| {
+                    let text_range = buffer_snapshot.anchor_range_inside(range);
+                    let start = snapshot.anchor_in_buffer_unchecked(text_range.start)?;
+                    let end = snapshot.anchor_in_buffer_unchecked(text_range.end)?;
+                    Some(start..end)
+                }))
             }
 
             multibuffer.with_title(title)

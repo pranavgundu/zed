@@ -12,7 +12,7 @@ use buffer_diagnostics::BufferDiagnosticsEditor;
 use collections::{BTreeSet, HashMap, HashSet};
 use diagnostic_renderer::DiagnosticBlock;
 use editor::{
-    Editor, EditorEvent, ExcerptRange, MultiBuffer, PathKey,
+    Anchor, Editor, EditorEvent, ExcerptRange, MultiBuffer, PathKey,
     display_map::{BlockPlacement, BlockProperties, BlockStyle, CustomBlockId},
     multibuffer_context_lines,
 };
@@ -625,22 +625,34 @@ impl ProjectDiagnosticsEditor {
                         });
                     })
                 }
-                let (anchor_ranges, _) = this.multibuffer.update(cx, |multi_buffer, cx| {
-                    let excerpt_ranges = excerpt_ranges
-                        .into_iter()
-                        .map(|range| ExcerptRange {
-                            context: range.context.to_point(&buffer_snapshot),
-                            primary: range.primary.to_point(&buffer_snapshot),
-                        })
-                        .collect();
+                let excerpt_ranges: Vec<_> = excerpt_ranges
+                    .into_iter()
+                    .map(|range| ExcerptRange {
+                        context: range.context.to_point(&buffer_snapshot),
+                        primary: range.primary.to_point(&buffer_snapshot),
+                    })
+                    .collect();
+                this.multibuffer.update(cx, |multi_buffer, cx| {
                     multi_buffer.set_excerpt_ranges_for_path(
                         PathKey::for_buffer(&buffer, cx),
                         buffer.clone(),
                         &buffer_snapshot,
-                        excerpt_ranges,
+                        excerpt_ranges.clone(),
                         cx,
                     )
                 });
+                let multibuffer_snapshot = this.multibuffer.read(cx).snapshot(cx);
+                let anchor_ranges: Vec<Range<Anchor>> = excerpt_ranges
+                    .into_iter()
+                    .filter_map(|range| {
+                        let text_range = buffer_snapshot.anchor_range_inside(range.primary);
+                        let start =
+                            multibuffer_snapshot.anchor_in_buffer_unchecked(text_range.start)?;
+                        let end =
+                            multibuffer_snapshot.anchor_in_buffer_unchecked(text_range.end)?;
+                        Some(start..end)
+                    })
+                    .collect();
                 #[cfg(test)]
                 let cloned_blocks = result_blocks.clone();
 

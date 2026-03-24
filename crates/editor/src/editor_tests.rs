@@ -18327,7 +18327,6 @@ async fn test_following_with_multiple_excerpts(cx: &mut TestAppContext) {
             project.create_local_buffer("aaa\nbbb\nccc\nddd\neee\nfff\nggg\nhhh\niii\njjj\nkkk\nlll\nmmm\nnnn\nooo\nppp\nqqq\nrrr\nsss\nttt\n", None, false, cx),
         )
     });
-    dbg!();
 
     // Insert some excerpts.
     leader.update(cx, |leader, cx| {
@@ -18343,7 +18342,6 @@ async fn test_following_with_multiple_excerpts(cx: &mut TestAppContext) {
                 0,
                 cx,
             );
-            dbg!();
             multibuffer.set_excerpts_for_path(
                 PathKey::with_sort_prefix(1, rel_path("a.txt").into_arc()),
                 buffer_2.clone(),
@@ -18354,7 +18352,6 @@ async fn test_following_with_multiple_excerpts(cx: &mut TestAppContext) {
         });
     });
 
-    dbg!();
     // Apply the update of adding the excerpts.
     follower_1
         .update_in(cx, |follower, window, cx| {
@@ -18373,11 +18370,9 @@ async fn test_following_with_multiple_excerpts(cx: &mut TestAppContext) {
     );
     update_message.borrow_mut().take();
 
-    dbg!();
     // Start following separately after it already has excerpts.
     let mut state_message =
         leader.update_in(cx, |leader, window, cx| leader.to_state_proto(window, cx));
-    dbg!(&state_message);
     let workspace_entity = workspace.clone();
     let follower_2 = cx
         .update_window(*window, |_, window, cx| {
@@ -18396,13 +18391,11 @@ async fn test_following_with_multiple_excerpts(cx: &mut TestAppContext) {
         .unwrap()
         .await
         .unwrap();
-    dbg!();
     assert_eq!(
         follower_2.update(cx, |editor, cx| editor.text(cx)),
         leader.update(cx, |editor, cx| editor.text(cx))
     );
 
-    dbg!();
     // Remove some excerpts.
     leader.update(cx, |leader, cx| {
         leader.buffer.update(cx, |multibuffer, cx| {
@@ -18413,7 +18406,6 @@ async fn test_following_with_multiple_excerpts(cx: &mut TestAppContext) {
         });
     });
 
-    dbg!();
     // Apply the update of removing the excerpts.
     follower_1
         .update_in(cx, |follower, window, cx| {
@@ -18437,7 +18429,6 @@ async fn test_following_with_multiple_excerpts(cx: &mut TestAppContext) {
         })
         .await
         .unwrap();
-    dbg!();
     update_message.borrow_mut().take();
     assert_eq!(
         follower_1.update(cx, |editor, cx| editor.text(cx)),

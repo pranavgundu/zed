@@ -215,13 +215,11 @@ where
             let target_position = target_buffer.anchor_before(target_position);
             let Some(target_position) = target_snapshot.buffer_anchor_to_anchor(target_position)
             else {
-                dbg!("ONE");
                 continue;
             };
             let Some((target_buffer_snapshot, target_excerpt_range)) =
                 target_snapshot.excerpt_containing(target_position..target_position)
             else {
-                dbg!("TWO");
                 continue;
             };
 
@@ -1011,43 +1009,44 @@ impl SplittableEditor {
         context_line_count: u32,
         diff: Entity<BufferDiff>,
         cx: &mut Context<Self>,
-    ) -> (Vec<Range<Anchor>>, bool) {
+    ) -> bool {
+        let has_ranges = ranges.clone().into_iter().next().is_some();
         let Some(companion) = self.companion(cx) else {
             return self.rhs_multibuffer.update(cx, |rhs_multibuffer, cx| {
-                let (anchors, added_a_new_excerpt) = rhs_multibuffer.set_excerpts_for_path(
+                let added_a_new_excerpt = rhs_multibuffer.set_excerpts_for_path(
                     path,
                     buffer.clone(),
                     ranges,
                     context_line_count,
                     cx,
                 );
-                if !anchors.is_empty()
+                if has_ranges
                     && rhs_multibuffer
                         .diff_for(buffer.read(cx).remote_id())
                         .is_none_or(|old_diff| old_diff.entity_id() != diff.entity_id())
                 {
                     rhs_multibuffer.add_diff(diff, cx);
                 }
-                (anchors, added_a_new_excerpt)
+                added_a_new_excerpt
             });
         };
 
         let result = self.rhs_multibuffer.update(cx, |rhs_multibuffer, cx| {
-            let (anchors, added_a_new_excerpt) = rhs_multibuffer.set_excerpts_for_path(
+            let added_a_new_excerpt = rhs_multibuffer.set_excerpts_for_path(
                 path.clone(),
                 buffer.clone(),
                 ranges,
                 context_line_count,
                 cx,
             );
-            if !anchors.is_empty()
+            if has_ranges
                 && rhs_multibuffer
                     .diff_for(buffer.read(cx).remote_id())
                     .is_none_or(|old_diff| old_diff.entity_id() != diff.entity_id())
             {
                 rhs_multibuffer.add_diff(diff.clone(), cx);
             }
-            (anchors, added_a_new_excerpt)
+            added_a_new_excerpt
         });
 
         self.sync_lhs_for_paths(vec![(path, diff)], &companion, cx);

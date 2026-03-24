@@ -503,8 +503,11 @@ impl ProjectDiff {
 
     pub fn active_path(&self, cx: &App) -> Option<ProjectPath> {
         let editor = self.editor.read(cx).focused_editor().read(cx);
+        let multibuffer = editor.buffer().read(cx);
         let position = editor.selections.newest_anchor().head();
-        let buffer = editor.buffer().read(cx).buffer_for_anchor(position, cx)?;
+        let snapshot = multibuffer.snapshot(cx);
+        let (text_anchor, _) = snapshot.anchor_to_buffer_anchor(position)?;
+        let buffer = multibuffer.buffer(text_anchor.buffer_id)?;
 
         let file = buffer.read(cx).file()?;
         Some(ProjectPath {
@@ -748,7 +751,7 @@ impl ProjectDiff {
 
         let (was_empty, is_excerpt_newly_added) = self.editor.update(cx, |editor, cx| {
             let was_empty = editor.rhs_editor().read(cx).buffer().read(cx).is_empty();
-            let (_, is_newly_added) = editor.set_excerpts_for_path(
+            let is_newly_added = editor.set_excerpts_for_path(
                 path_key.clone(),
                 buffer,
                 excerpt_ranges,

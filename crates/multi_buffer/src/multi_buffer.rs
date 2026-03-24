@@ -1708,15 +1708,11 @@ impl MultiBuffer {
     fn merge_excerpt_ranges<'a>(
         expanded_ranges: impl IntoIterator<Item = &'a ExcerptRange<Point>> + 'a,
     ) -> Vec<ExcerptRange<Point>> {
+        let mut sorted: Vec<_> = expanded_ranges.into_iter().collect();
+        sorted.sort_by_key(|range| range.context.start);
         let mut merged_ranges: Vec<ExcerptRange<Point>> = Vec::new();
-        for range in expanded_ranges {
-            dbg!(&range);
+        for range in sorted {
             if let Some(last_range) = merged_ranges.last_mut() {
-                dbg!(&last_range);
-                assert!(
-                    last_range.context.start <= range.context.start,
-                    "ranges must be sorted: {last_range:?} <= {range:?}"
-                );
                 if last_range.context.end >= range.context.start
                     || last_range.context.end.row + 1 == range.context.start.row
                 {
@@ -1732,9 +1728,10 @@ impl MultiBuffer {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.sync_mut(cx);
         let removed_buffer_ids = std::mem::take(&mut self.buffers).into_keys().collect();
+        self.diffs.clear();
         let MultiBufferSnapshot {
             excerpts,
-            diffs: _,
+            diffs,
             diff_transforms: _,
             non_text_state_update_count: _,
             edit_count: _,
@@ -1756,6 +1753,7 @@ impl MultiBuffer {
         let prev_len = ExcerptDimension(excerpts.summary().text.len);
         *excerpts = Default::default();
         *buffers = Default::default();
+        *diffs = Default::default();
         *trailing_excerpt_update_count += 1;
         *is_dirty = false;
         *has_deleted_file = false;
@@ -1786,14 +1784,6 @@ impl MultiBuffer {
         let start = Anchor::in_buffer(path_key, text::Anchor::min_for_buffer(buffer_id));
         let end = Anchor::in_buffer(path_key, text::Anchor::max_for_buffer(buffer_id));
         Some((start..end).to_point(&snapshot))
-    }
-
-    pub fn buffer_for_anchor(&self, anchor: Anchor, cx: &App) -> Option<Entity<Buffer>> {
-        match anchor {
-            Anchor::Min => Some(self.snapshot(cx).excerpts.first()?.buffer(self)),
-            Anchor::Excerpt(excerpt_anchor) => self.buffer(excerpt_anchor.text_anchor.buffer_id),
-            Anchor::Max => Some(self.snapshot(cx).excerpts.first()?.buffer(self)),
-        }
     }
 
     // If point is at the end of the buffer, the last excerpt is returned
@@ -2353,7 +2343,6 @@ impl MultiBuffer {
                         snapshot.buffer_anchor_to_anchor(diff_hunk.excerpt_range.context.end)
                     && hunk_end_anchor.cmp(end_anchor, snapshot).is_gt()
                 {
-                    dbg!("HERE not expanding");
                     continue;
                 }
                 let hunk_range = diff_hunk.multi_buffer_range;
@@ -3097,13 +3086,12 @@ fn build_excerpt_ranges(
         .map(|range| {
             let start_row = range.start.row.saturating_sub(context_line_count);
             let start = Point::new(start_row, 0);
-            let end_row = (dbg!(range.end.row) + dbg!(context_line_count))
-                .min(dbg!(buffer_snapshot.max_point().row));
+            let end_row = (range.end.row + context_line_count).min(buffer_snapshot.max_point().row);
             let end = Point::new(end_row, buffer_snapshot.line_len(end_row));
-            dbg!(ExcerptRange {
+            ExcerptRange {
                 context: start..end,
                 primary: range,
-            })
+            }
         })
         .collect()
 }
@@ -3238,12 +3226,10 @@ impl MultiBuffer {
                             rng.random_range(next_min_start_ix..=buffer.len()),
                             Bias::Right,
                         );
-                        let start_ix = buffer.clip_offset(
-                            rng.random_range(dbg!(next_min_start_ix..=end_ix)),
-                            Bias::Left,
-                        );
+                        let start_ix = buffer
+                            .clip_offset(rng.random_range(next_min_start_ix..=end_ix), Bias::Left);
                         next_min_start_ix = buffer.text().ceil_char_boundary(end_ix + 1);
-                        Some(dbg!(ExcerptRange::new(start_ix..end_ix)))
+                        Some(ExcerptRange::new(start_ix..end_ix))
                     })
                     .collect::<Vec<_>>();
                 log::info!(
@@ -3261,7 +3247,7 @@ impl MultiBuffer {
                     path_key.clone(),
                     buffer_handle,
                     &buffer_snapshot,
-                    dbg!(ranges),
+                    ranges,
                     cx,
                 );
                 log::info!("Inserted with path_key: {:?}", path_key);
@@ -5357,21 +5343,22 @@ impl MultiBufferSnapshot {
         &self,
         anchor: Anchor,
     ) -> Option<(text::Anchor, &BufferSnapshot)> {
-        let mut cursor = self.excerpts.cursor::<ExcerptSummary>(());
-        cursor.seek(&anchor.seek_target(&self), Bias::Left);
-
-        let excerpt = cursor.item()?;
-
-        // FIXME handle the case where it's past the end of the last excerpt for the buffer
-        if let Anchor::Excerpt(excerpt_anchor) = anchor
-            && (excerpt_anchor.path != excerpt.path_key_index
-                || excerpt_anchor.buffer_id() != excerpt.buffer_id)
-        {
-            return None;
+        match anchor {
+            Anchor::Min => {
+                let excerpt = self.excerpts.first()?;
+                let buffer = excerpt.buffer_snapshot(self);
+                Some((excerpt.range.context.start, buffer))
+            }
+            Anchor::Excerpt(excerpt_anchor) => {
+                let buffer = self.buffer_for_id(excerpt_anchor.buffer_id())?;
+                Some((excerpt_anchor.text_anchor, buffer))
+            }
+            Anchor::Max => {
+                let excerpt = self.excerpts.last()?;
+                let buffer = excerpt.buffer_snapshot(self);
+                Some((excerpt.range.context.end, buffer))
+            }
         }
-
-        let buffer_snapshot = excerpt.buffer_snapshot(&self);
-        Some((anchor.text_anchor_in(buffer_snapshot), buffer_snapshot))
     }
 
     pub fn can_resolve(&self, anchor: &Anchor) -> bool {
@@ -6401,7 +6388,6 @@ impl MultiBufferSnapshot {
     }
 
     pub(crate) fn path_key_index_for_buffer(&self, buffer_id: BufferId) -> Option<PathKeyIndex> {
-        dbg!(self.buffers.iter().map(|(k, _)| k).collect::<Vec<_>>());
         let snapshot = self.buffers.get(&buffer_id)?;
         Some(snapshot.path_key_index)
     }
@@ -6777,7 +6763,6 @@ impl MultiBufferSnapshot {
             );
         }
 
-        dbg!(&self.buffers);
         let all_excerpt_path_keys = HashSet::from_iter(excerpts.iter().map(|e| e.path_key.clone()));
 
         for (ix, excerpt) in excerpts.iter().enumerate() {
@@ -6787,6 +6772,11 @@ impl MultiBufferSnapshot {
                 if excerpt.path_key < prev.path_key {
                     panic!("excerpt path_keys are out-of-order: {:#?}", excerpts);
                 } else if excerpt.path_key == prev.path_key {
+                    assert_eq!(
+                        excerpt.buffer_id, prev.buffer_id,
+                        "excerpts with same path_key have different buffer_ids: {:#?}",
+                        excerpts
+                    );
                     if excerpt
                         .start_anchor()
                         .cmp(&prev.end_anchor(), &self)
@@ -6829,7 +6819,6 @@ impl MultiBufferSnapshot {
                 excerpt.path_key,
             );
         }
-        dbg!(self.excerpts.iter().count());
         assert_eq!(all_buffer_path_keys, all_excerpt_path_keys);
 
         if self.diff_transforms.summary().input != self.excerpts.summary().text {
@@ -7453,17 +7442,13 @@ impl sum_tree::SeekTarget<'_, ExcerptSummary, ExcerptSummary> for AnchorSeekTarg
                 if path_comparison.is_ne() {
                     path_comparison
                 } else if let Some(snapshot) = snapshot {
-                    // todo!() think more about this..
-                    // the goal is that if you seek to buffer_id 1 (path key a)
-                    // and you find that path key a now belongs to buffer_id 2,
-                    // we'll seek past buffer_id 2.
-                    if cursor_location.max_anchor.map(|a| a.buffer_id) != Some(snapshot.remote_id())
-                    {
+                    if anchor.text_anchor.buffer_id != snapshot.remote_id() {
                         Ordering::Greater
+                    } else if let Some(max_anchor) = cursor_location.max_anchor {
+                        debug_assert_eq!(max_anchor.buffer_id, snapshot.remote_id());
+                        anchor.text_anchor().cmp(&max_anchor, snapshot)
                     } else {
-                        anchor
-                            .text_anchor()
-                            .cmp(&cursor_location.max_anchor.unwrap(), snapshot)
+                        Ordering::Greater
                     }
                 } else {
                     // shouldn't happen because we expect this buffer not to have any excerpts

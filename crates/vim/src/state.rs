@@ -889,12 +889,13 @@ impl VimGlobals {
                 }
             }
             '%' => editor.and_then(|editor| {
+                let multibuffer = editor.buffer().read(cx);
+                let snapshot = multibuffer.snapshot(cx);
                 let selection = editor.selections.newest_anchor();
-                if let Some(buffer) = editor
-                    .buffer()
-                    .read(cx)
-                    .buffer_for_anchor(selection.head(), cx)
-                {
+                let buffer = snapshot
+                    .anchor_to_buffer_anchor(selection.head())
+                    .and_then(|(text_anchor, _)| multibuffer.buffer(text_anchor.buffer_id));
+                if let Some(buffer) = buffer {
                     buffer
                         .read(cx)
                         .file()

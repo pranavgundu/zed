@@ -173,7 +173,7 @@ impl AgentDiffPane {
             let (was_empty, is_excerpt_newly_added) =
                 self.multibuffer.update(cx, |multibuffer, cx| {
                     let was_empty = multibuffer.is_empty();
-                    let (_, is_excerpt_newly_added) = multibuffer.set_excerpts_for_path(
+                    let is_excerpt_newly_added = multibuffer.set_excerpts_for_path(
                         path_key.clone(),
                         buffer.clone(),
                         diff_hunk_ranges,

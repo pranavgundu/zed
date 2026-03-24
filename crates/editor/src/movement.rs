@@ -607,10 +607,10 @@ pub fn start_of_excerpt(
             start
         }
         Direction::Next => {
-            let mut end = map
-                .buffer_anchor_to_anchor(excerpt_range.context.end)
-                .unwrap()
-                .to_display_point(map);
+            let Some(end_anchor) = map.buffer_anchor_to_anchor(excerpt_range.context.end) else {
+                return display_point;
+            };
+            let mut end = end_anchor.to_display_point(map);
             *end.row_mut() += 1;
             map.clip_point(end, Bias::Right)
         }
@@ -641,7 +641,7 @@ pub fn end_of_excerpt(
             start
         }
         Direction::Next => {
-            let Some(end_anchor) = map.buffer_anchor_to_anchor(excerpt_range.context.start) else {
+            let Some(end_anchor) = map.buffer_anchor_to_anchor(excerpt_range.context.end) else {
                 return display_point;
             };
             let mut end = end_anchor.to_display_point(map);

@@ -77,7 +77,7 @@ impl MultiBuffer {
         ranges: impl IntoIterator<Item = Range<Point>>,
         context_line_count: u32,
         cx: &mut Context<Self>,
-    ) -> (Vec<Range<Anchor>>, bool) {
+    ) -> bool {
         let path = PathKey::for_buffer(&buffer, cx);
         self.set_excerpts_for_path(path, buffer, ranges, context_line_count, cx)
     }
@@ -91,24 +91,15 @@ impl MultiBuffer {
         ranges: impl IntoIterator<Item = Range<Point>>,
         context_line_count: u32,
         cx: &mut Context<Self>,
-    ) -> (Vec<Range<Anchor>>, bool) {
+    ) -> bool {
         let buffer_snapshot = buffer.read(cx).snapshot();
         let ranges: Vec<_> = ranges.into_iter().collect();
-        let excerpt_ranges =
-            build_excerpt_ranges(ranges.clone(), context_line_count, &buffer_snapshot);
+        let excerpt_ranges = build_excerpt_ranges(ranges, context_line_count, &buffer_snapshot);
 
         let merged = Self::merge_excerpt_ranges(&excerpt_ranges);
-        dbg!(&merged);
-        let (inserted, path_key_index) =
+        let (inserted, _path_key_index) =
             self.set_merged_excerpt_ranges_for_path(path, buffer, &buffer_snapshot, merged, cx);
-        // todo!() move this into the callers that care
-        let anchors = ranges
-            .into_iter()
-            .map(|range| {
-                Anchor::range_in_buffer(path_key_index, buffer_snapshot.anchor_range_inside(range))
-            })
-            .collect::<Vec<_>>();
-        (anchors, inserted)
+        inserted
     }
 
     pub fn set_excerpt_ranges_for_path(
@@ -118,20 +109,11 @@ impl MultiBuffer {
         buffer_snapshot: &BufferSnapshot,
         excerpt_ranges: Vec<ExcerptRange<Point>>,
         cx: &mut Context<Self>,
-    ) -> (Vec<Range<Anchor>>, bool) {
+    ) -> bool {
         let merged = Self::merge_excerpt_ranges(&excerpt_ranges);
-        let (inserted, path_key_index) =
+        let (inserted, _path_key_index) =
             self.set_merged_excerpt_ranges_for_path(path, buffer, buffer_snapshot, merged, cx);
-        let anchors = excerpt_ranges
-            .into_iter()
-            .map(|range| {
-                Anchor::range_in_buffer(
-                    path_key_index,
-                    buffer_snapshot.anchor_range_inside(range.primary),
-                )
-            })
-            .collect::<Vec<_>>();
-        (anchors, inserted)
+        inserted
     }
 
     pub fn set_anchored_excerpts_for_path(
@@ -324,10 +306,7 @@ impl MultiBuffer {
         to_insert: &Vec<ExcerptRange<text::Anchor>>,
         cx: &mut Context<Self>,
     ) -> bool {
-        dbg!("UPDATE");
-
         let path_key_index = self.get_or_create_path_key_index(&path_key);
-        dbg!(&path_key, &path_key_index);
         if let Some(old_path_key) = self
             .snapshot(cx)
             .path_for_buffer(buffer_snapshot.remote_id())
@@ -362,8 +341,8 @@ impl MultiBuffer {
         // handle the case where the path key used to be associated
         // with a different buffer by removing its excerpts.
         if let Some(excerpt) = cursor.item()
-            && dbg!(&excerpt.path_key) == dbg!(&path_key)
-            && dbg!(excerpt.buffer_id) != dbg!(buffer_id)
+            && &excerpt.path_key == &path_key
+            && excerpt.buffer_id != buffer_id
         {
             self.buffers.remove(&excerpt.buffer_id);
             snapshot.buffers.remove(&excerpt.buffer_id);
@@ -578,7 +557,6 @@ impl MultiBuffer {
     }
 
     pub fn remove_excerpts(&mut self, path: PathKey, cx: &mut Context<Self>) {
-        dbg!("REMOVE");
         assert_eq!(self.history.transaction_depth(), 0);
         self.sync_mut(cx);
 
@@ -601,10 +579,11 @@ impl MultiBuffer {
         let changed_trailing_excerpt = suffix.is_empty();
         new_excerpts.append(suffix, ());
 
-        dbg!(&snapshot.buffers);
         if let Some(buffer_id) = buffer_id {
-            snapshot.buffers.remove(dbg!(&buffer_id));
+            snapshot.buffers.remove(&buffer_id);
+            snapshot.diffs.remove(&buffer_id);
             self.buffers.remove(&buffer_id);
+            self.diffs.remove(&buffer_id);
             cx.emit(Event::BuffersRemoved {
                 removed_buffer_ids: vec![buffer_id],
             })

@@ -90,7 +90,7 @@ impl FollowableItem for Editor {
             .iter()
             .map(|excerpt| excerpt.buffer_id)
             .collect::<HashSet<_>>();
-        dbg!(&buffer_ids);
+
         let buffers = project.update(cx, |project, cx| {
             buffer_ids
                 .iter()
@@ -111,36 +111,31 @@ impl FollowableItem for Editor {
                     } else {
                         multibuffer = MultiBuffer::new(project.read(cx).capability());
                         for path_with_ranges in state.path_excerpts {
-                            dbg!();
                             let Some(path_key) =
                                 path_with_ranges.path_key.and_then(deserialize_path_key)
                             else {
                                 continue;
                             };
-                            dbg!();
                             let Some(buffer_id) = BufferId::new(path_with_ranges.buffer_id).ok()
                             else {
                                 continue;
                             };
-                            dbg!();
                             let Some(buffer) =
                                 buffers.iter().find(|b| b.read(cx).remote_id() == buffer_id)
                             else {
                                 continue;
                             };
-                            dbg!();
                             let buffer_snapshot = buffer.read(cx).snapshot();
                             let ranges = path_with_ranges
                                 .ranges
                                 .into_iter()
                                 .filter_map(deserialize_excerpt_range)
                                 .collect::<Vec<_>>();
-                            dbg!();
                             multibuffer.update_path_excerpts(
                                 path_key,
                                 buffer.clone(),
                                 &buffer_snapshot,
-                                dbg!(&ranges),
+                                &ranges,
                                 cx,
                             );
                         }
@@ -149,8 +144,6 @@ impl FollowableItem for Editor {
                     if let Some(title) = &state.title {
                         multibuffer = multibuffer.with_title(title.clone())
                     }
-
-                    dbg!(&multibuffer.snapshot(cx).excerpts().collect::<Vec<_>>());
 
                     multibuffer
                 });
@@ -163,7 +156,7 @@ impl FollowableItem for Editor {
                 })
             })?;
 
-            dbg!(editor.update(cx, |editor, cx| editor.text(cx)));
+            editor.update(cx, |editor, cx| editor.text(cx));
             update_editor_from_message(
                 editor.downgrade(),
                 project,
@@ -566,7 +559,6 @@ fn deserialize_excerpt_range(
             Some(start..end)
         })
         .unwrap_or_else(|| context.clone());
-    dbg!();
     Some(ExcerptRange { context, primary })
 }
 
