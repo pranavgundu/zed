@@ -1246,12 +1246,8 @@ impl BlockMap {
         let our_buffer = wrap_snapshot.buffer_snapshot();
         let companion_buffer = companion_snapshot.buffer_snapshot();
 
-        // FIXME we lost the distinction between excluding vs including the trailing empty excerpt
         let range = match bounds {
-            (Bound::Included(start), Bound::Excluded(end)) => {
-                // FIXME make it not include the trailing empty excerpt if there is one
-                start..end
-            }
+            (Bound::Included(start), Bound::Excluded(end)) => start..end,
             (Bound::Included(start), Bound::Unbounded) => start..wrap_snapshot.buffer().max_point(),
             _ => unreachable!(),
         };
@@ -1261,7 +1257,6 @@ impl BlockMap {
             our_buffer,
             range,
         );
-        // FIXME hack hack hack
         if let Some(patch) = patches.last()
             && let Bound::Excluded(end) = bounds.1
             && end == wrap_snapshot.buffer().max_point()
