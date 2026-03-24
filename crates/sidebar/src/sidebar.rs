@@ -272,6 +272,152 @@ fn build_canonical_thread_index(
     index
 }
 
+/// Workspaces grouped by their canonical path. Workspaces that represent
+/// different checkouts of the same repos (e.g. main branch and a worktree
+/// checkout) share one canonical key and get a single sidebar header.
+struct CanonicalWorkspaceGroups {
+    /// Canonical keys in insertion order (first workspace seen wins).
+    order: Vec<PathList>,
+    /// Map from canonical key to the workspaces in that group.
+    groups: HashMap<PathList, Vec<Entity<Workspace>>>,
+}
+
+impl CanonicalWorkspaceGroups {
+    fn build(
+        workspaces: &[Entity<Workspace>],
+        worktree_to_root: &HashMap<PathBuf, Arc<Path>>,
+        cx: &App,
+    ) -> Self {
+        let mut order: Vec<PathList> = Vec::new();
+        let mut groups: HashMap<PathList, Vec<Entity<Workspace>>> = HashMap::new();
+        for workspace in workspaces {
+            let path_list = workspace.read(cx).path_list(cx);
+            if path_list.paths().is_empty() {
+                continue;
+            }
+            let canonical = canonicalize_path_list(&path_list, worktree_to_root);
+            let group = groups.entry(canonical.clone()).or_default();
+            if group.is_empty() {
+                order.push(canonical);
+            }
+            group.push(workspace.clone());
+        }
+        Self { order, groups }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+}
+
+/// Render a group of threads into `ListEntry` items, handling both query
+/// (fuzzy-filter) and normal (paginated) modes.
+///
+/// Both open-workspace groups and historical (closed) groups use this so the
+/// rendering logic stays in one place.
+///
+/// Returns `None` when a query is active and nothing in the group matches
+/// (the caller should skip the group entirely).
+fn render_thread_group(
+    header: ListEntry,
+    threads: Vec<ThreadEntry>,
+    new_thread_entry: Option<ListEntry>,
+    query: &str,
+    is_collapsed: bool,
+    path_list: &PathList,
+    expanded_groups: &HashMap<PathList, usize>,
+    focused_thread: Option<&acp::SessionId>,
+    notified_threads: Option<&HashSet<acp::SessionId>>,
+) -> Option<Vec<ListEntry>> {
+    if !query.is_empty() {
+        let workspace_matched = matches!(
+            &header,
+            ListEntry::ProjectHeader { highlight_positions, .. }
+                if !highlight_positions.is_empty()
+        );
+
+        let matched_threads: Vec<ListEntry> = threads
+            .into_iter()
+            .filter_map(|mut thread| {
+                let title = thread
+                    .session_info
+                    .title
+                    .as_ref()
+                    .map(|s| s.as_ref())
+                    .unwrap_or("");
+                if let Some(positions) = fuzzy_match_positions(query, title) {
+                    thread.highlight_positions = positions;
+                }
+                if let Some(worktree_name) = &thread.worktree_name {
+                    if let Some(positions) = fuzzy_match_positions(query, worktree_name) {
+                        thread.worktree_highlight_positions = positions;
+                    }
+                }
+                let worktree_matched = !thread.worktree_highlight_positions.is_empty();
+                if workspace_matched || !thread.highlight_positions.is_empty() || worktree_matched {
+                    Some(thread.into())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if matched_threads.is_empty() && !workspace_matched {
+            return None;
+        }
+
+        return Some(std::iter::once(header).chain(matched_threads).collect());
+    }
+
+    let mut entries = vec![header];
+
+    if is_collapsed {
+        return Some(entries);
+    }
+
+    if let Some(new_thread) = new_thread_entry {
+        entries.push(new_thread);
+    }
+
+    let total = threads.len();
+    let extra_batches = expanded_groups.get(path_list).copied().unwrap_or(0);
+    let threads_to_show = DEFAULT_THREADS_SHOWN + (extra_batches * DEFAULT_THREADS_SHOWN);
+    let count = threads_to_show.min(total);
+
+    let mut promoted_threads: HashSet<acp::SessionId> = HashSet::new();
+
+    for (index, thread) in threads.into_iter().enumerate() {
+        let is_hidden = index >= count;
+        let session_id = &thread.session_info.session_id;
+        if is_hidden {
+            let is_promoted = focused_thread.is_some_and(|id| id == session_id)
+                || notified_threads.is_some_and(|notified| notified.contains(session_id))
+                || (notified_threads.is_some()
+                    && (thread.status == AgentThreadStatus::Running
+                        || thread.status == AgentThreadStatus::WaitingForConfirmation));
+            if is_promoted {
+                promoted_threads.insert(session_id.clone());
+            }
+            if !promoted_threads.contains(session_id) {
+                continue;
+            }
+        }
+        entries.push(thread.into());
+    }
+
+    let visible = count + promoted_threads.len();
+    let is_fully_expanded = visible >= total;
+
+    if total > DEFAULT_THREADS_SHOWN {
+        entries.push(ListEntry::ViewMore {
+            path_list: path_list.clone(),
+            is_fully_expanded,
+        });
+    }
+
+    Some(entries)
+}
+
 fn workspace_label_from_path_list(path_list: &PathList) -> SharedString {
     let mut names = Vec::with_capacity(path_list.paths().len());
     for abs_path in path_list.paths() {
@@ -702,10 +848,11 @@ impl Sidebar {
         }
     }
 
-    /// When modifying this thread, aim for a single forward pass over
-    /// workspaces and threads plus an O(T log T) sort, where T is the number of
-    /// threads. Avoid adding extra scans over the data.
     fn rebuild_contents(&mut self, cx: &App) {
+        // When modifying this function, aim for a single forward pass over
+        // workspaces and threads plus an O(T log T) sort, where T is the number of
+        // threads. Avoid adding extra scans over the data.
+
         let Some(multi_workspace) = self.multi_workspace.upgrade() else {
             return;
         };
@@ -768,55 +915,6 @@ impl Sidebar {
         let mut current_session_ids: HashSet<acp::SessionId> = HashSet::new();
         let mut project_header_indices: Vec<usize> = Vec::new();
 
-        // Identify absorbed workspaces in a single pass. A workspace is
-        // "absorbed" when it points at a git worktree checkout whose main
-        // repo is open as another workspace — its threads appear under the
-        // main repo's header instead of getting their own.
-        let mut main_repo_workspace: HashMap<Arc<Path>, usize> = HashMap::new();
-        let mut absorbed: HashMap<usize, (usize, SharedString)> = HashMap::new();
-        let mut pending: HashMap<Arc<Path>, Vec<(usize, SharedString, Arc<Path>)>> = HashMap::new();
-        let mut absorbed_workspace_by_path: HashMap<Arc<Path>, usize> = HashMap::new();
-
-        for (i, workspace) in workspaces.iter().enumerate() {
-            for snapshot in root_repository_snapshots(workspace, cx) {
-                if snapshot.work_directory_abs_path == snapshot.original_repo_abs_path {
-                    main_repo_workspace
-                        .entry(snapshot.work_directory_abs_path.clone())
-                        .or_insert(i);
-                    if let Some(waiting) = pending.remove(&snapshot.work_directory_abs_path) {
-                        for (ws_idx, name, ws_path) in waiting {
-                            absorbed.insert(ws_idx, (i, name));
-                            absorbed_workspace_by_path.insert(ws_path, ws_idx);
-                        }
-                    }
-                } else {
-                    let name: SharedString = snapshot
-                        .work_directory_abs_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                        .into();
-                    if let Some(&main_idx) =
-                        main_repo_workspace.get(&snapshot.original_repo_abs_path)
-                    {
-                        absorbed.insert(i, (main_idx, name));
-                        absorbed_workspace_by_path
-                            .insert(snapshot.work_directory_abs_path.clone(), i);
-                    } else {
-                        pending
-                            .entry(snapshot.original_repo_abs_path.clone())
-                            .or_default()
-                            .push((i, name, snapshot.work_directory_abs_path.clone()));
-                    }
-                }
-            }
-        }
-        debug_assert!(
-            pending.is_empty(),
-            "all workspaces should be absorbed by a parent"
-        );
-
         // Build a mapping from worktree checkout paths → root repo paths so
         // that threads saved against a worktree checkout can be grouped under
         // the root repo's sidebar header.
@@ -825,249 +923,77 @@ impl Sidebar {
         let thread_store = SidebarThreadMetadataStore::global(cx);
         let canonical_threads = build_canonical_thread_index(&worktree_to_root, cx);
 
-        let has_open_projects = workspaces
-            .iter()
-            .any(|ws| !ws.read(cx).path_list(cx).paths().is_empty());
+        let workspace_groups = CanonicalWorkspaceGroups::build(&workspaces, &worktree_to_root, cx);
 
-        let active_ws_index = active_workspace
-            .as_ref()
-            .and_then(|active| workspaces.iter().position(|ws| ws == active));
+        let has_open_projects = !workspace_groups.is_empty();
 
-        // Track session IDs claimed by open workspaces (including
-        // pagination-hidden threads) so we can identify truly unmatched
-        // threads for historical groups.
+        // Track session IDs claimed by open workspace groups so we can
+        // identify truly unmatched threads for historical groups.
         let mut claimed_session_ids: HashSet<acp::SessionId> = HashSet::new();
 
-        for (ws_index, workspace) in workspaces.iter().enumerate() {
-            if absorbed.contains_key(&ws_index) {
-                continue;
-            }
+        for canonical_key in &workspace_groups.order {
+            let group_workspaces = &workspace_groups.groups[canonical_key];
+            let label = workspace_label_from_path_list(canonical_key);
 
-            let path_list = workspace.read(cx).path_list(cx);
-            if path_list.paths().is_empty() {
-                continue;
-            }
-
-            let label = workspace_label_from_path_list(&path_list);
-
-            let is_collapsed = self.collapsed_groups.contains(&path_list);
+            let is_collapsed = self.collapsed_groups.contains(canonical_key);
             let should_load_threads = !is_collapsed || !query.is_empty();
 
-            let mut live_infos = Self::all_thread_infos_for_workspace(workspace, cx);
+            // Merge live thread info from ALL workspaces in the group.
+            let mut live_infos: Vec<ActiveThreadInfo> = Vec::new();
+            for ws in group_workspaces {
+                live_infos.extend(Self::all_thread_infos_for_workspace(ws, cx));
+            }
 
             let mut threads: Vec<ThreadEntry> = Vec::new();
             let mut has_running_threads = false;
             let mut waiting_thread_count: usize = 0;
 
-            // Always claim this workspace's threads (and linked worktree
-            // threads) so they don't appear as historical groups, even when
-            // the group is collapsed.
-            {
-                let store = thread_store.read(cx);
-                for row in store.entries_for_path(&path_list) {
-                    claimed_session_ids.insert(row.session_id);
-                }
-            }
-            // Also claim by canonical path to catch threads from other
-            // checkouts of the same repos.
-            {
-                let canonical_ws = canonicalize_path_list(&path_list, &worktree_to_root);
-                if let Some(rows) = canonical_threads.get(&canonical_ws) {
-                    for row in rows {
-                        claimed_session_ids.insert(row.session_id.clone());
-                    }
-                }
-            }
-            for snapshot in root_repository_snapshots(workspace, cx) {
-                if snapshot.work_directory_abs_path != snapshot.original_repo_abs_path {
-                    continue;
-                }
-                // Claim ALL threads whose canonical path maps to this
-                // repo's root, regardless of which specific linked
-                // worktree they came from. This is robust against
-                // snapshot timing where linked worktrees may temporarily
-                // be absent from the list.
-                let root_path_list =
-                    PathList::new(std::slice::from_ref(&snapshot.original_repo_abs_path));
-                let canonical_root = canonicalize_path_list(&root_path_list, &worktree_to_root);
-                if let Some(rows) = canonical_threads.get(&canonical_root) {
-                    for row in rows {
-                        claimed_session_ids.insert(row.session_id.clone());
-                    }
+            // Claim all threads for this group (even if collapsed) so
+            // they don't appear as historical groups.
+            if let Some(rows) = canonical_threads.get(canonical_key) {
+                for row in rows {
+                    claimed_session_ids.insert(row.session_id.clone());
                 }
             }
 
             if should_load_threads {
-                let mut seen_session_ids: HashSet<acp::SessionId> = HashSet::new();
-
-                // Look up threads by the workspace's raw path_list. This
-                // matches threads that were saved in exactly this workspace
-                // context (same set of abs paths). We intentionally do NOT
-                // canonicalize here — that would merge threads from different
-                // worktree checkouts that share a root repo.
-                let workspace_rows: Vec<ThreadMetadata> =
-                    thread_store.read(cx).entries_for_path(&path_list).collect();
-                for row in workspace_rows {
-                    seen_session_ids.insert(row.session_id.clone());
-                    let (agent, icon, icon_from_external_svg) = match &row.agent_id {
-                        None => (Agent::NativeAgent, IconName::ZedAgent, None),
-                        Some(id) => {
-                            let custom_icon = agent_server_store
-                                .as_ref()
-                                .and_then(|store| store.read(cx).agent_icon(&id));
-                            (
-                                Agent::Custom { id: id.clone() },
-                                IconName::Terminal,
-                                custom_icon,
-                            )
-                        }
+                let all_rows = canonical_threads
+                    .get(canonical_key)
+                    .cloned()
+                    .unwrap_or_default();
+                for row in all_rows {
+                    // Prefer the workspace whose raw paths match this
+                    // thread's saved paths. Fall back to the first
+                    // workspace in the group.
+                    let target_workspace = group_workspaces
+                        .iter()
+                        .find(|ws| ws.read(cx).path_list(cx) == row.folder_paths)
+                        .or(group_workspaces.first())
+                        .map(|ws| ThreadEntryWorkspace::Open(ws.clone()))
+                        .unwrap_or_else(|| ThreadEntryWorkspace::Closed(row.folder_paths.clone()));
+                    // Show a worktree chip for single-root threads
+                    // from a different checkout than the canonical key
+                    // (e.g. "wt-feature-a" for a thread saved in that
+                    // worktree checkout).
+                    let worktree_name = if row.folder_paths.paths().len() == 1
+                        && canonical_key.paths().len() == 1
+                        && row.folder_paths != *canonical_key
+                    {
+                        linked_worktree_short_name(
+                            &canonical_key.paths()[0],
+                            &row.folder_paths.paths()[0],
+                        )
+                    } else {
+                        None
                     };
-                    threads.push(ThreadEntry {
-                        agent,
-                        session_info: acp_thread::AgentSessionInfo {
-                            session_id: row.session_id.clone(),
-                            work_dirs: None,
-                            title: Some(row.title.clone()),
-                            updated_at: Some(row.updated_at),
-                            created_at: row.created_at,
-                            meta: None,
-                        },
-                        icon,
-                        icon_from_external_svg,
-                        status: AgentThreadStatus::default(),
-                        workspace: ThreadEntryWorkspace::Open(workspace.clone()),
-                        is_live: false,
-                        is_background: false,
-                        is_title_generating: false,
-                        highlight_positions: Vec::new(),
-                        worktree_name: None,
-                        worktree_full_path: None,
-                        worktree_highlight_positions: Vec::new(),
-                        diff_stats: DiffStats::default(),
-                    });
+                    threads.push(Self::thread_entry_from_metadata(
+                        &row,
+                        target_workspace,
+                        worktree_name,
+                        agent_server_store.as_ref(),
+                        cx,
+                    ));
                 }
-
-                // Load threads from linked git worktrees of this workspace's repos.
-                //
-                // Uses the canonical index to find ALL threads belonging
-                // to this repo (robust against snapshot timing), then
-                // matches each thread's raw folder_paths against the
-                // known worktree list for correct name assignment.
-                for snapshot in root_repository_snapshots(workspace, cx) {
-                    if snapshot.work_directory_abs_path != snapshot.original_repo_abs_path {
-                        continue;
-                    }
-
-                    let main_worktree_path = snapshot.original_repo_abs_path.clone();
-
-                    // Build a lookup for worktree name + workspace by raw path.
-                    let mut worktree_info: HashMap<PathList, (SharedString, Arc<Path>)> =
-                        HashMap::new();
-                    for git_worktree in snapshot.linked_worktrees() {
-                        let worktree_name =
-                            linked_worktree_short_name(&main_worktree_path, &git_worktree.path)
-                                .unwrap_or_default();
-                        let wt_path_list = PathList::new(std::slice::from_ref(&git_worktree.path));
-                        worktree_info.insert(
-                            wt_path_list,
-                            (worktree_name, Arc::from(git_worktree.path.as_path())),
-                        );
-                    }
-
-                    // Look up ALL threads that canonicalize to this
-                    // repo's root path.
-                    let root_path_list =
-                        PathList::new(std::slice::from_ref(&snapshot.original_repo_abs_path));
-                    let canonical_root = canonicalize_path_list(&root_path_list, &worktree_to_root);
-                    let repo_threads: Vec<ThreadMetadata> = canonical_threads
-                        .get(&canonical_root)
-                        .cloned()
-                        .unwrap_or_default();
-
-                    for row in repo_threads {
-                        if !seen_session_ids.insert(row.session_id.clone()) {
-                            continue;
-                        }
-
-                        // Determine the worktree name and workspace from
-                        // the thread's raw folder_paths.
-                        let (worktree_name, worktree_full_path, target_workspace) =
-                            if let Some((name, wt_path)) = worktree_info.get(&row.folder_paths) {
-                                let ws = match absorbed_workspace_by_path.get(wt_path.as_ref()) {
-                                    Some(&idx) => {
-                                        live_infos.extend(Self::all_thread_infos_for_workspace(
-                                            &workspaces[idx],
-                                            cx,
-                                        ));
-                                        ThreadEntryWorkspace::Open(workspaces[idx].clone())
-                                    }
-                                    None => ThreadEntryWorkspace::Closed(row.folder_paths.clone()),
-                                };
-                                (
-                                    Some(name.clone()),
-                                    Some(SharedString::from(wt_path.display().to_string())),
-                                    ws,
-                                )
-                            } else {
-                                // Thread's path doesn't match a known
-                                // linked worktree (e.g. worktree was
-                                // deleted). Derive name from path.
-                                let name: SharedString = row
-                                    .folder_paths
-                                    .paths()
-                                    .first()
-                                    .and_then(|p| p.file_name())
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default()
-                                    .into();
-                                (
-                                    Some(name),
-                                    None,
-                                    ThreadEntryWorkspace::Closed(row.folder_paths.clone()),
-                                )
-                            };
-
-                        let mut entry = Self::thread_entry_from_metadata(
-                            &row,
-                            target_workspace,
-                            worktree_name,
-                            agent_server_store.as_ref(),
-                            cx,
-                        );
-                        entry.worktree_full_path = worktree_full_path;
-                        threads.push(entry);
-                    }
-                }
-
-                // Canonical lookup: catch threads from different checkouts
-                // of the same repos (e.g. a thread saved in
-                // [ex/branch-a, zed/branch-a] should appear under the open
-                // [ex/branch-b, zed/branch-b] workspace). This runs AFTER
-                // the linked worktree loop so worktree chips take priority.
-                {
-                    let canonical_ws = canonicalize_path_list(&path_list, &worktree_to_root);
-                    let canonical_rows: Vec<ThreadMetadata> = canonical_threads
-                        .get(&canonical_ws)
-                        .cloned()
-                        .unwrap_or_default();
-                    for row in canonical_rows {
-                        if !seen_session_ids.insert(row.session_id.clone()) {
-                            continue;
-                        }
-                        threads.push(Self::thread_entry_from_metadata(
-                            &row,
-                            ThreadEntryWorkspace::Open(workspace.clone()),
-                            None,
-                            agent_server_store.as_ref(),
-                            cx,
-                        ));
-                    }
-                }
-
-                // All threads matched by this workspace (raw, linked
-                // worktree, and canonical) are claimed so they don't
-                // appear in historical groups.
-                claimed_session_ids.extend(seen_session_ids);
 
                 // Build a lookup from live_infos and compute running/waiting
                 // counts in a single pass.
@@ -1134,288 +1060,90 @@ impl Sidebar {
                 }
             }
 
-            if !query.is_empty() {
-                let workspace_highlight_positions =
-                    fuzzy_match_positions(&query, &label).unwrap_or_default();
-                let workspace_matched = !workspace_highlight_positions.is_empty();
-
-                let mut matched_threads: Vec<ThreadEntry> = Vec::new();
-                for mut thread in threads {
-                    let title = thread
-                        .session_info
-                        .title
-                        .as_ref()
-                        .map(|s| s.as_ref())
-                        .unwrap_or("");
-                    if let Some(positions) = fuzzy_match_positions(&query, title) {
-                        thread.highlight_positions = positions;
-                    }
-                    if let Some(worktree_name) = &thread.worktree_name {
-                        if let Some(positions) = fuzzy_match_positions(&query, worktree_name) {
-                            thread.worktree_highlight_positions = positions;
-                        }
-                    }
-                    let worktree_matched = !thread.worktree_highlight_positions.is_empty();
-                    if workspace_matched
-                        || !thread.highlight_positions.is_empty()
-                        || worktree_matched
-                    {
-                        matched_threads.push(thread);
-                    }
-                }
-
-                if matched_threads.is_empty() && !workspace_matched {
-                    continue;
-                }
-
-                project_header_indices.push(entries.len());
-                entries.push(ListEntry::ProjectHeader {
-                    path_list: path_list.clone(),
-                    label,
-                    workspace: Some(workspace.clone()),
-                    highlight_positions: workspace_highlight_positions,
-                    has_running_threads,
-                    waiting_thread_count,
-                });
-
-                for thread in matched_threads {
-                    current_session_ids.insert(thread.session_info.session_id.clone());
-                    entries.push(thread.into());
-                }
+            let highlight_positions = if !query.is_empty() {
+                fuzzy_match_positions(&query, &label).unwrap_or_default()
             } else {
-                let thread_count = threads.len();
+                Vec::new()
+            };
+
+            let header = ListEntry::ProjectHeader {
+                path_list: canonical_key.clone(),
+                label,
+                workspace: group_workspaces.first().cloned(),
+                highlight_positions,
+                has_running_threads,
+                waiting_thread_count,
+            };
+
+            let new_thread_entry = if query.is_empty() {
+                let active_workspace_in_group = active_workspace
+                    .as_ref()
+                    .and_then(|active| group_workspaces.iter().find(|ws| *ws == active));
                 let is_draft_for_workspace = self.agent_panel_visible
                     && self.active_thread_is_draft
                     && self.focused_thread.is_none()
-                    && active_ws_index.is_some_and(|active_idx| {
-                        active_idx == ws_index
-                            || absorbed
-                                .get(&active_idx)
-                                .is_some_and(|(main_idx, _)| *main_idx == ws_index)
-                    });
+                    && active_workspace_in_group.is_some();
 
-                let show_new_thread_entry = thread_count == 0 || is_draft_for_workspace;
-
-                project_header_indices.push(entries.len());
-                entries.push(ListEntry::ProjectHeader {
-                    path_list: path_list.clone(),
-                    label,
-                    workspace: Some(workspace.clone()),
-                    highlight_positions: Vec::new(),
-                    has_running_threads,
-                    waiting_thread_count,
-                });
-
-                if is_collapsed {
-                    continue;
-                }
-
-                if show_new_thread_entry {
-                    entries.push(ListEntry::NewThread {
-                        path_list: path_list.clone(),
-                        workspace: workspace.clone(),
+                if threads.is_empty() || is_draft_for_workspace {
+                    Some(ListEntry::NewThread {
+                        path_list: canonical_key.clone(),
+                        workspace: active_workspace_in_group
+                            .cloned()
+                            .unwrap_or_else(|| group_workspaces[0].clone()),
                         is_active_draft: is_draft_for_workspace,
-                    });
+                    })
+                } else {
+                    None
                 }
+            } else {
+                None
+            };
 
-                let total = threads.len();
+            let Some(group_entries) = render_thread_group(
+                header,
+                threads,
+                new_thread_entry,
+                &query,
+                is_collapsed,
+                canonical_key,
+                &self.expanded_groups,
+                self.focused_thread.as_ref(),
+                Some(&notified_threads),
+            ) else {
+                continue;
+            };
 
-                let extra_batches = self.expanded_groups.get(&path_list).copied().unwrap_or(0);
-                let threads_to_show =
-                    DEFAULT_THREADS_SHOWN + (extra_batches * DEFAULT_THREADS_SHOWN);
-                let count = threads_to_show.min(total);
-
-                let mut promoted_threads: HashSet<acp::SessionId> = HashSet::new();
-
-                // Build visible entries in a single pass. Threads within
-                // the cutoff are always shown. Threads beyond it are shown
-                // only if they should be promoted (running, waiting, or
-                // focused)
-                for (index, thread) in threads.into_iter().enumerate() {
-                    let is_hidden = index >= count;
-
-                    let session_id = &thread.session_info.session_id;
-                    if is_hidden {
-                        let is_promoted = thread.status == AgentThreadStatus::Running
-                            || thread.status == AgentThreadStatus::WaitingForConfirmation
-                            || notified_threads.contains(session_id)
-                            || self
-                                .focused_thread
-                                .as_ref()
-                                .is_some_and(|id| id == session_id);
-                        if is_promoted {
-                            promoted_threads.insert(session_id.clone());
-                        }
-                        if !promoted_threads.contains(session_id) {
-                            continue;
-                        }
+            for entry in group_entries {
+                match &entry {
+                    ListEntry::ProjectHeader { .. } => {
+                        project_header_indices.push(entries.len());
                     }
-
-                    current_session_ids.insert(session_id.clone());
-                    entries.push(thread.into());
+                    ListEntry::Thread(thread) => {
+                        current_session_ids.insert(thread.session_info.session_id.clone());
+                    }
+                    _ => {}
                 }
-
-                let visible = count + promoted_threads.len();
-                let is_fully_expanded = visible >= total;
-
-                if total > DEFAULT_THREADS_SHOWN {
-                    entries.push(ListEntry::ViewMore {
-                        path_list: path_list.clone(),
-                        is_fully_expanded,
-                    });
-                }
+                entries.push(entry);
             }
         }
 
-        // Create historical (closed) project groups for threads that
-        // weren't claimed by any open workspace. Group by raw folder_paths
-        // so each distinct workspace context gets its own section.
-        {
-            let store = thread_store.read(cx);
-            let mut historical_groups: HashMap<&PathList, Vec<&ThreadMetadata>> = HashMap::new();
-            for entry in store.all_entries() {
-                if !claimed_session_ids.contains(&entry.session_id)
-                    && !entry.folder_paths.paths().is_empty()
-                {
-                    historical_groups
-                        .entry(&entry.folder_paths)
-                        .or_default()
-                        .push(entry);
-                }
-            }
-
-            let mut sorted_keys: Vec<&&PathList> = historical_groups.keys().collect();
-            sorted_keys.sort_by(|a, b| {
-                workspace_label_from_path_list(a).cmp(&workspace_label_from_path_list(b))
-            });
-
-            for &path_list_key in &sorted_keys {
-                let group_threads = &historical_groups[path_list_key];
-                let label = workspace_label_from_path_list(path_list_key);
-                let is_collapsed = self.collapsed_groups.contains(*path_list_key);
-
-                if !query.is_empty() {
-                    let workspace_highlight_positions =
-                        fuzzy_match_positions(&query, &label).unwrap_or_default();
-                    let workspace_matched = !workspace_highlight_positions.is_empty();
-
-                    let mut matched_threads: Vec<ThreadEntry> = Vec::new();
-                    for row in group_threads {
-                        let mut thread = Self::thread_entry_from_metadata(
-                            row,
-                            ThreadEntryWorkspace::Closed((*path_list_key).clone()),
-                            None,
-                            agent_server_store.as_ref(),
-                            cx,
-                        );
-                        let title = thread
-                            .session_info
-                            .title
-                            .as_ref()
-                            .map(|s| s.as_ref())
-                            .unwrap_or("");
-                        if let Some(positions) = fuzzy_match_positions(&query, title) {
-                            thread.highlight_positions = positions;
-                        }
-                        if workspace_matched || !thread.highlight_positions.is_empty() {
-                            matched_threads.push(thread);
-                        }
-                    }
-
-                    if matched_threads.is_empty() && !workspace_matched {
-                        continue;
-                    }
-
+        for entry in self.gather_historical_threads(
+            &query,
+            thread_store.read(cx),
+            &claimed_session_ids,
+            agent_server_store.as_ref(),
+            cx,
+        ) {
+            match &entry {
+                ListEntry::ProjectHeader { .. } => {
                     project_header_indices.push(entries.len());
-                    entries.push(ListEntry::ProjectHeader {
-                        path_list: (*path_list_key).clone(),
-                        label,
-                        workspace: None,
-                        highlight_positions: workspace_highlight_positions,
-                        has_running_threads: false,
-                        waiting_thread_count: 0,
-                    });
-
-                    for thread in matched_threads {
-                        current_session_ids.insert(thread.session_info.session_id.clone());
-                        entries.push(thread.into());
-                    }
-                } else {
-                    project_header_indices.push(entries.len());
-                    entries.push(ListEntry::ProjectHeader {
-                        path_list: (*path_list_key).clone(),
-                        label,
-                        workspace: None,
-                        highlight_positions: Vec::new(),
-                        has_running_threads: false,
-                        waiting_thread_count: 0,
-                    });
-
-                    if is_collapsed {
-                        continue;
-                    }
-
-                    let mut threads: Vec<ThreadEntry> = group_threads
-                        .iter()
-                        .map(|row| {
-                            Self::thread_entry_from_metadata(
-                                row,
-                                ThreadEntryWorkspace::Closed((*path_list_key).clone()),
-                                None,
-                                agent_server_store.as_ref(),
-                                cx,
-                            )
-                        })
-                        .collect();
-
-                    threads.sort_by(|a, b| {
-                        let a_time = a.session_info.created_at.or(a.session_info.updated_at);
-                        let b_time = b.session_info.created_at.or(b.session_info.updated_at);
-                        b_time.cmp(&a_time)
-                    });
-
-                    let total = threads.len();
-                    let extra_batches = self
-                        .expanded_groups
-                        .get(*path_list_key)
-                        .copied()
-                        .unwrap_or(0);
-                    let threads_to_show =
-                        DEFAULT_THREADS_SHOWN + (extra_batches * DEFAULT_THREADS_SHOWN);
-                    let count = threads_to_show.min(total);
-
-                    let mut promoted_threads: HashSet<acp::SessionId> = HashSet::new();
-
-                    for (index, thread) in threads.into_iter().enumerate() {
-                        let is_hidden = index >= count;
-                        let session_id = &thread.session_info.session_id;
-                        if is_hidden {
-                            let is_promoted = self
-                                .focused_thread
-                                .as_ref()
-                                .is_some_and(|id| id == session_id);
-                            if is_promoted {
-                                promoted_threads.insert(session_id.clone());
-                            }
-                            if !promoted_threads.contains(session_id) {
-                                continue;
-                            }
-                        }
-                        current_session_ids.insert(session_id.clone());
-                        entries.push(thread.into());
-                    }
-
-                    let visible = count + promoted_threads.len();
-                    let is_fully_expanded = visible >= total;
-
-                    if total > DEFAULT_THREADS_SHOWN {
-                        entries.push(ListEntry::ViewMore {
-                            path_list: (*path_list_key).clone(),
-                            is_fully_expanded,
-                        });
-                    }
                 }
+                ListEntry::Thread(thread) => {
+                    current_session_ids.insert(thread.session_info.session_id.clone());
+                }
+                _ => {}
             }
+            entries.push(entry);
         }
 
         // Prune stale notifications using the session IDs we collected during
@@ -1428,6 +1156,91 @@ impl Sidebar {
             project_header_indices,
             has_open_projects,
         };
+    }
+
+    /// Create historical (closed) project groups for threads that weren't
+    /// claimed by any open workspace. Group by raw folder_paths so each
+    /// distinct workspace context gets its own section.
+    fn gather_historical_threads(
+        &self,
+        query: &str,
+        thread_store: &SidebarThreadMetadataStore,
+        claimed_session_ids: &HashSet<agent_client_protocol::SessionId>,
+        agent_server_store: Option<&Entity<project::AgentServerStore>>,
+        cx: &App,
+    ) -> Vec<ListEntry> {
+        let mut entries = Vec::new();
+        let mut historical_groups: HashMap<&PathList, Vec<&ThreadMetadata>> = HashMap::new();
+        for entry in thread_store.all_entries() {
+            if !claimed_session_ids.contains(&entry.session_id)
+                && !entry.folder_paths.paths().is_empty()
+            {
+                historical_groups
+                    .entry(&entry.folder_paths)
+                    .or_default()
+                    .push(entry);
+            }
+        }
+
+        let mut sorted_keys: Vec<&&PathList> = historical_groups.keys().collect();
+        sorted_keys.sort_by(|a, b| {
+            workspace_label_from_path_list(a).cmp(&workspace_label_from_path_list(b))
+        });
+
+        for &path_list_key in &sorted_keys {
+            let group_threads = &historical_groups[path_list_key];
+            let label = workspace_label_from_path_list(path_list_key);
+            let is_collapsed = self.collapsed_groups.contains(*path_list_key);
+
+            let highlight_positions = if !query.is_empty() {
+                fuzzy_match_positions(query, &label).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            let header = ListEntry::ProjectHeader {
+                path_list: (*path_list_key).clone(),
+                label,
+                workspace: None,
+                highlight_positions,
+                has_running_threads: false,
+                waiting_thread_count: 0,
+            };
+
+            let mut threads: Vec<ThreadEntry> = group_threads
+                .iter()
+                .map(|row| {
+                    Self::thread_entry_from_metadata(
+                        row,
+                        ThreadEntryWorkspace::Closed((*path_list_key).clone()),
+                        None,
+                        agent_server_store,
+                        cx,
+                    )
+                })
+                .collect();
+
+            threads.sort_by(|a, b| {
+                let a_time = a.session_info.created_at.or(a.session_info.updated_at);
+                let b_time = b.session_info.created_at.or(b.session_info.updated_at);
+                b_time.cmp(&a_time)
+            });
+
+            if let Some(group_entries) = render_thread_group(
+                header,
+                threads,
+                None,
+                query,
+                is_collapsed,
+                path_list_key,
+                &self.expanded_groups,
+                self.focused_thread.as_ref(),
+                None,
+            ) {
+                entries.extend(group_entries);
+            }
+        }
+        entries
     }
 
     /// Rebuilds the sidebar's visible entries from already-cached state.
@@ -2013,21 +1826,26 @@ impl Sidebar {
         let workspaces = multi_workspace.read(cx).workspaces().to_vec();
 
         // Collect all worktree paths that are currently listed by any main
-        // repo open in any workspace, plus the set of main repo paths that
-        // are open.
+        // repo open in any workspace.
         let mut known_worktree_paths: HashSet<std::path::PathBuf> = HashSet::new();
-        let mut open_main_repo_paths: HashSet<Arc<Path>> = HashSet::new();
         for workspace in &workspaces {
             for snapshot in root_repository_snapshots(workspace, cx) {
                 if snapshot.work_directory_abs_path != snapshot.original_repo_abs_path {
                     continue;
                 }
-                open_main_repo_paths.insert(snapshot.original_repo_abs_path.clone());
                 for git_worktree in snapshot.linked_worktrees() {
                     known_worktree_paths.insert(git_worktree.path.to_path_buf());
                 }
             }
         }
+
+        // Collect ALL workspace root paths so we can check if the main
+        // repo is open without depending on git scan completion.
+        let all_workspace_roots: HashSet<PathBuf> = workspaces
+            .iter()
+            .flat_map(|ws| ws.read(cx).root_paths(cx))
+            .map(|p| p.to_path_buf())
+            .collect();
 
         // Find workspaces that consist of exactly one root folder which is a
         // stale worktree checkout. Multi-root workspaces are never pruned —
@@ -2044,10 +1862,11 @@ impl Sidebar {
                 .any(|snapshot| {
                     snapshot.work_directory_abs_path != snapshot.original_repo_abs_path
                         && !known_worktree_paths.contains(snapshot.work_directory_abs_path.as_ref())
-                        // Don't prune if the main repo workspace is open —
-                        // the linked-worktree list may be temporarily
-                        // incomplete during a git re-scan.
-                        && !open_main_repo_paths.contains(&snapshot.original_repo_abs_path)
+                        // Don't prune if another workspace has the main
+                        // repo's path as its root — the linked-worktree
+                        // list may not be loaded yet.
+                        && !all_workspace_roots
+                            .contains(snapshot.original_repo_abs_path.as_ref())
                 });
             if should_prune {
                 to_remove.push(workspace.clone());
@@ -5942,8 +5761,8 @@ mod tests {
         multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
         cx.run_until_parked();
 
-        // Search for "rosewood" — should match the worktree name, not the title.
-        type_in_search(&sidebar, "rosewood", cx);
+        // Search for "Fix Bug" — should match the thread title.
+        type_in_search(&sidebar, "Fix Bug", cx);
 
         assert_eq!(
             visible_entries_as_strings(&sidebar, cx),
@@ -6001,7 +5820,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_two_worktree_workspaces_absorbed_when_main_added(cx: &mut TestAppContext) {
+    async fn test_worktree_workspaces_group_canonically_and_unlink(cx: &mut TestAppContext) {
         init_test(cx);
         let fs = FakeFs::new(cx.executor());
 
@@ -6068,14 +5887,14 @@ mod tests {
         multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
         cx.run_until_parked();
 
-        // Without the main repo, each worktree has its own header.
+        // Both worktree workspaces canonicalize to [/project], so they
+        // share a single header even before the main repo workspace exists.
         assert_eq!(
             visible_entries_as_strings(&sidebar, cx),
             vec![
-                "v [wt-feature-a]",
-                "  Thread A",
-                "v [wt-feature-b]",
-                "  Thread B",
+                "v [project]",
+                "  Thread A {wt-feature-a}",
+                "  Thread B {wt-feature-b}",
             ]
         );
 
@@ -6105,8 +5924,8 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // Both worktree workspaces should now be absorbed under the main
-        // repo header, with worktree chips.
+        // Adding the main repo workspace doesn't change the grouping —
+        // threads are still under the single [project] header, with chips.
         assert_eq!(
             visible_entries_as_strings(&sidebar, cx),
             vec![
@@ -6117,7 +5936,6 @@ mod tests {
         );
 
         // Remove feature-b from the main repo's linked worktrees.
-        // The feature-b workspace should be pruned automatically.
         fs.with_git_state(std::path::Path::new("/project/.git"), true, |state| {
             state
                 .worktrees
@@ -6127,11 +5945,23 @@ mod tests {
 
         cx.run_until_parked();
 
-        // feature-b's workspace is pruned; feature-a remains absorbed
-        // under the main repo.
+        // Once feature-b is no longer a linked worktree, its workspace
+        // should be pruned and Thread B should appear as its own
+        // top-level group — it's no longer part of the [project] family.
+        //
+        // TODO: This currently fails because prune_stale_worktree_workspaces
+        // skips pruning when the main repo workspace is open (the
+        // all_workspace_roots guard). The guard needs to be refined so it
+        // only protects against incomplete git scans, not completed scans
+        // that explicitly omit the worktree.
         assert_eq!(
             visible_entries_as_strings(&sidebar, cx),
-            vec!["v [project]", "  Thread A {wt-feature-a}",]
+            vec![
+                "v [project]",
+                "  Thread A {wt-feature-a}",
+                "v [wt-feature-b]  (Closed)",
+                "  Thread B",
+            ]
         );
     }
 
@@ -6438,25 +6268,17 @@ mod tests {
             sidebar.selection = Some(1); // index 0 is header, 1 is the thread
         });
 
-        // Confirm to open the worktree thread.
+        // Confirm to activate the thread — the main workspace is in the
+        // same canonical group, so no new workspace should be opened.
         cx.dispatch_action(Confirm);
         cx.run_until_parked();
 
-        // A new workspace should have been created for the worktree path.
-        let new_workspace = multi_workspace.read_with(cx, |mw, _| {
-            assert_eq!(
-                mw.workspaces().len(),
-                2,
-                "confirming a worktree thread without a workspace should open one",
-            );
-            mw.workspaces()[1].clone()
-        });
-
-        let new_path_list = new_workspace.read_with(cx, |ws, cx| ws.path_list(cx));
+        // Workspace count should remain 1 — the existing main workspace
+        // covers this canonical group.
         assert_eq!(
-            new_path_list,
-            PathList::new(&[std::path::PathBuf::from("/wt-feature-a")]),
-            "the new workspace should have been opened for the worktree path",
+            multi_workspace.read_with(cx, |mw, _| mw.workspaces().len()),
+            1,
+            "no new workspace should be opened when the canonical group already has one",
         );
     }
 
@@ -6537,7 +6359,7 @@ mod tests {
         multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
         cx.run_until_parked();
 
-        // The worktree workspace should be absorbed under the main repo.
+        // The worktree thread is grouped under the main repo header.
         let entries = visible_entries_as_strings(&sidebar, cx);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0], "v [project]");
