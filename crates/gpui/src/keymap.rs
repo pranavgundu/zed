@@ -242,12 +242,13 @@ impl Keymap {
         (bindings, !pending.is_empty())
     }
     /// Check if the given binding is enabled, given a certain key context.
-    /// Returns the deepest depth at which the binding matches, or None if it doesn't match.
-    fn binding_enabled(binding: &KeyBinding, contexts: &[KeyContext]) -> Option<usize> {
+    /// Returns the deepest depth at which the binding matches, 0 for globally
+    /// matching bindings or None if it doesn't match.
+    pub fn binding_enabled(binding: &KeyBinding, contexts: &[KeyContext]) -> Option<usize> {
         if let Some(predicate) = &binding.context_predicate {
             predicate.depth_of(contexts)
         } else {
-            Some(contexts.len())
+            Some(0)
         }
     }
 
