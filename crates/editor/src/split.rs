@@ -1010,7 +1010,7 @@ impl SplittableEditor {
         cx.notify();
     }
 
-    pub fn set_excerpts_for_path(
+    pub fn update_excerpts_for_path(
         &mut self,
         path: PathKey,
         buffer: Entity<Buffer>,
@@ -1022,7 +1022,7 @@ impl SplittableEditor {
         let has_ranges = ranges.clone().into_iter().next().is_some();
         let Some(companion) = self.companion(cx) else {
             return self.rhs_multibuffer.update(cx, |rhs_multibuffer, cx| {
-                let added_a_new_excerpt = rhs_multibuffer.set_excerpts_for_path(
+                let added_a_new_excerpt = rhs_multibuffer.update_excerpts_for_path(
                     path,
                     buffer.clone(),
                     ranges,
@@ -1041,7 +1041,7 @@ impl SplittableEditor {
         };
 
         let result = self.rhs_multibuffer.update(cx, |rhs_multibuffer, cx| {
-            let added_a_new_excerpt = rhs_multibuffer.set_excerpts_for_path(
+            let added_a_new_excerpt = rhs_multibuffer.update_excerpts_for_path(
                 path.clone(),
                 buffer.clone(),
                 ranges,
@@ -2162,7 +2162,7 @@ mod tests {
                 let context_lines = rng.random_range(0..2);
                 editor.update(cx, |editor, cx| {
                     let path = PathKey::for_buffer(&buffer, cx);
-                    editor.set_excerpts_for_path(path, buffer, ranges, context_lines, diff, cx);
+                    editor.update_excerpts_for_path(path, buffer, ranges, context_lines, diff, cx);
                 });
                 editor.update(cx, |editor, cx| {
                     editor.check_invariants(true, cx);
@@ -2197,7 +2197,14 @@ mod tests {
                     let context_lines = rng.random_range(0..2);
                     editor.update(cx, |editor, cx| {
                         let path = PathKey::for_buffer(&buffer, cx);
-                        editor.set_excerpts_for_path(path, buffer, ranges, context_lines, diff, cx);
+                        editor.update_excerpts_for_path(
+                            path,
+                            buffer,
+                            ranges,
+                            context_lines,
+                            diff,
+                            cx,
+                        );
                     });
                 }
                 15..=29 => {
@@ -2241,7 +2248,14 @@ mod tests {
                     let buffer = buffer.clone();
                     editor.update(cx, |editor, cx| {
                         let path = PathKey::for_buffer(&buffer, cx);
-                        editor.set_excerpts_for_path(path, buffer, ranges, context_lines, diff, cx);
+                        editor.update_excerpts_for_path(
+                            path,
+                            buffer,
+                            ranges,
+                            context_lines,
+                            diff,
+                            cx,
+                        );
                     });
                 }
                 55..=64 => {
@@ -2321,7 +2335,7 @@ mod tests {
                             .collect::<Vec<_>>();
                         editor.update(cx, |editor, cx| {
                             let path = PathKey::for_buffer(&buffer, cx);
-                            editor.set_excerpts_for_path(path, buffer, ranges, 2, diff, cx);
+                            editor.update_excerpts_for_path(path, buffer, ranges, 2, diff, cx);
                         });
                     }
                     quiesced = true;
@@ -2358,7 +2372,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(path, buffer.clone(), ranges, 0, diff.clone(), cx);
+            editor.update_excerpts_for_path(path, buffer.clone(), ranges, 0, diff.clone(), cx);
         });
         cx.run_until_parked();
 
@@ -2415,7 +2429,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -2544,7 +2558,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path1 = PathKey::for_buffer(&buffer1, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path1,
                 buffer1.clone(),
                 vec![Point::new(0, 0)..buffer1.read(cx).max_point()],
@@ -2553,7 +2567,7 @@ mod tests {
                 cx,
             );
             let path2 = PathKey::for_buffer(&buffer2, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path2,
                 buffer2.clone(),
                 vec![Point::new(0, 0)..buffer2.read(cx).max_point()],
@@ -2702,7 +2716,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -2829,7 +2843,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -2948,7 +2962,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3078,7 +3092,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3175,7 +3189,7 @@ mod tests {
         editor.update(cx, |editor, cx| {
             let end = Point::new(0, text.len() as u32);
             let path1 = PathKey::for_buffer(&buffer1, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path1,
                 buffer1.clone(),
                 vec![Point::new(0, 0)..end],
@@ -3184,7 +3198,7 @@ mod tests {
                 cx,
             );
             let path2 = PathKey::for_buffer(&buffer2, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path2,
                 buffer2.clone(),
                 vec![Point::new(0, 0)..end],
@@ -3252,7 +3266,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3315,7 +3329,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3376,7 +3390,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3492,7 +3506,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path1 = PathKey::for_buffer(&buffer1, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path1,
                 buffer1.clone(),
                 vec![Point::new(0, 0)..buffer1.read(cx).max_point()],
@@ -3502,7 +3516,7 @@ mod tests {
             );
 
             let path2 = PathKey::for_buffer(&buffer2, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path2,
                 buffer2.clone(),
                 vec![Point::new(0, 0)..buffer2.read(cx).max_point()],
@@ -3600,7 +3614,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3676,7 +3690,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3763,7 +3777,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3877,7 +3891,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -3961,7 +3975,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -4045,7 +4059,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -4137,7 +4151,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -4265,7 +4279,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -4412,7 +4426,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -4634,7 +4648,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -4973,7 +4987,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path1 = PathKey::for_buffer(&buffer1, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path1,
                 buffer1.clone(),
                 vec![Point::new(0, 0)..buffer1.read(cx).max_point()],
@@ -4982,7 +4996,7 @@ mod tests {
                 cx,
             );
             let path2 = PathKey::for_buffer(&buffer2, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path2,
                 buffer2.clone(),
                 vec![Point::new(0, 0)..buffer2.read(cx).max_point()],
@@ -5138,7 +5152,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -5299,7 +5313,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -5458,7 +5472,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -5589,7 +5603,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![
@@ -5650,7 +5664,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..buffer.read(cx).max_point()],
@@ -5733,7 +5747,7 @@ mod tests {
 
         editor.update(cx, |editor, cx| {
             let path = PathKey::for_buffer(&buffer, cx);
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path,
                 buffer.clone(),
                 vec![Point::new(0, 0)..Point::new(3, 3)],
@@ -5845,7 +5859,7 @@ mod tests {
         let path_b = cx.read(|cx| PathKey::for_buffer(&buffer_b, cx));
 
         editor.update(cx, |editor, cx| {
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path_a.clone(),
                 buffer_a.clone(),
                 vec![Point::new(0, 0)..buffer_a.read(cx).max_point()],
@@ -5853,7 +5867,7 @@ mod tests {
                 diff_a.clone(),
                 cx,
             );
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path_b.clone(),
                 buffer_b.clone(),
                 vec![Point::new(0, 0)..buffer_b.read(cx).max_point()],
@@ -5883,7 +5897,7 @@ mod tests {
         cx.run_until_parked();
 
         editor.update(cx, |editor, cx| {
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path_a.clone(),
                 buffer_a.clone(),
                 vec![Point::new(0, 0)..buffer_a.read(cx).max_point()],
@@ -5940,7 +5954,7 @@ mod tests {
         };
 
         editor.update(cx, |editor, cx| {
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path_key_1.clone(),
                 buffer.clone(),
                 vec![Point::new(0, 0)..Point::new(1, 0)],
@@ -5948,7 +5962,7 @@ mod tests {
                 diff.clone(),
                 cx,
             );
-            editor.set_excerpts_for_path(
+            editor.update_excerpts_for_path(
                 path_key_2.clone(),
                 buffer.clone(),
                 vec![Point::new(1, 0)..buffer.read(cx).max_point()],

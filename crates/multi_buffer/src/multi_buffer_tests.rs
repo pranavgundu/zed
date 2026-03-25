@@ -1938,6 +1938,203 @@ fn test_set_excerpts_for_buffer(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn test_update_excerpt_ranges_for_path(cx: &mut TestAppContext) {
+    let buffer = cx.new(|cx| {
+        Buffer::local(
+            indoc! {
+            "row 0
+            row 1
+            row 2
+            row 3
+            row 4
+            row 5
+            row 6
+            row 7
+            row 8
+            row 9
+            row 10
+            row 11
+            row 12
+            row 13
+            row 14
+            "},
+            cx,
+        )
+    });
+    let path = PathKey::with_sort_prefix(0, rel_path("test.rs").into_arc());
+
+    let multibuffer = cx.new(|_| MultiBuffer::new(Capability::ReadWrite));
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.set_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![Point::row_range(2..4), Point::row_range(8..10)],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 2
+            row 3
+            row 4
+            -----
+            row 8
+            row 9
+            row 10
+            "},
+    );
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.update_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![Point::row_range(12..13)],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 12
+            row 13
+            "},
+    );
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.set_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![Point::row_range(2..4)],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 2
+            row 3
+            row 4
+            "},
+    );
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.update_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![Point::row_range(3..5)],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 2
+            row 3
+            row 4
+            row 5
+            "},
+    );
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.set_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![
+                Point::row_range(0..1),
+                Point::row_range(6..8),
+                Point::row_range(12..13),
+            ],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 0
+            row 1
+            -----
+            row 6
+            row 7
+            row 8
+            -----
+            row 12
+            row 13
+            "},
+    );
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.update_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![Point::row_range(7..9)],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 6
+            row 7
+            row 8
+            row 9
+            "},
+    );
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.set_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![Point::row_range(2..3), Point::row_range(6..7)],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 2
+            row 3
+            -----
+            row 6
+            row 7
+            "},
+    );
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.update_excerpts_for_path(
+            path.clone(),
+            buffer.clone(),
+            vec![Point::row_range(3..6)],
+            0,
+            cx,
+        );
+    });
+    assert_excerpts_match(
+        &multibuffer,
+        cx,
+        indoc! {"-----
+            row 2
+            row 3
+            row 4
+            row 5
+            row 6
+            row 7
+            "},
+    );
+}
+
+#[gpui::test]
 fn test_set_excerpts_for_buffer_rename(cx: &mut TestAppContext) {
     let buf1 = cx.new(|cx| {
         Buffer::local(

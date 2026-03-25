@@ -751,7 +751,7 @@ impl ProjectDiff {
 
         let (was_empty, is_excerpt_newly_added) = self.editor.update(cx, |editor, cx| {
             let was_empty = editor.rhs_editor().read(cx).buffer().read(cx).is_empty();
-            let is_newly_added = editor.set_excerpts_for_path(
+            let is_newly_added = editor.update_excerpts_for_path(
                 path_key.clone(),
                 buffer,
                 excerpt_ranges,

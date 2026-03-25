@@ -632,6 +632,7 @@ impl ProjectDiagnosticsEditor {
                         primary: range.primary.to_point(&buffer_snapshot),
                     })
                     .collect();
+                // TODO(cole): maybe should use the nonshrinking API?
                 this.multibuffer.update(cx, |multi_buffer, cx| {
                     multi_buffer.set_excerpt_ranges_for_path(
                         PathKey::for_buffer(&buffer, cx),

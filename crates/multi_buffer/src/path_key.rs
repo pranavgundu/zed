@@ -83,6 +83,8 @@ impl MultiBuffer {
     }
 
     /// Sets excerpts, returns `true` if at least one new excerpt was added.
+    ///
+    /// Any existing excerpts for this buffer or this path will be replaced by the provided ranges.
     #[instrument(skip_all)]
     pub fn set_excerpts_for_path(
         &mut self,
@@ -100,6 +102,74 @@ impl MultiBuffer {
         let (inserted, _path_key_index) =
             self.set_merged_excerpt_ranges_for_path(path, buffer, &buffer_snapshot, merged, cx);
         inserted
+    }
+
+    /// Like [`Self::set_excerpts_for_path`], but expands the provided ranges to cover any overlapping existing excerpts
+    /// for the same buffer and path.
+    ///
+    /// Existing excerpts that do not overlap any of the provided ranges are discarded.
+    pub fn update_excerpts_for_path(
+        &mut self,
+        path: PathKey,
+        buffer: Entity<Buffer>,
+        ranges: impl IntoIterator<Item = Range<Point>>,
+        context_line_count: u32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let buffer_snapshot = buffer.read(cx).snapshot();
+        let ranges: Vec<_> = ranges.into_iter().collect();
+        let excerpt_ranges = build_excerpt_ranges(ranges, context_line_count, &buffer_snapshot);
+        let merged = self.merge_new_with_existing_excerpt_ranges(
+            &path,
+            &buffer_snapshot,
+            excerpt_ranges,
+            cx,
+        );
+
+        let (inserted, _path_key_index) =
+            self.set_merged_excerpt_ranges_for_path(path, buffer, &buffer_snapshot, merged, cx);
+        inserted
+    }
+
+    pub fn merge_new_with_existing_excerpt_ranges(
+        &self,
+        path: &PathKey,
+        buffer_snapshot: &BufferSnapshot,
+        mut excerpt_ranges: Vec<ExcerptRange<Point>>,
+        cx: &App,
+    ) -> Vec<ExcerptRange<Point>> {
+        let multibuffer_snapshot = self.snapshot(cx);
+
+        if multibuffer_snapshot.path_for_buffer(buffer_snapshot.remote_id()) == Some(path) {
+            excerpt_ranges.sort_by_key(|range| range.context.start);
+            let mut combined_ranges = Vec::new();
+            let mut new_ranges = excerpt_ranges.into_iter().peekable();
+            for existing_range in
+                multibuffer_snapshot.excerpts_for_buffer(buffer_snapshot.remote_id())
+            {
+                let existing_range = ExcerptRange {
+                    context: existing_range.context.to_point(buffer_snapshot),
+                    primary: existing_range.primary.to_point(buffer_snapshot),
+                };
+                while let Some(new_range) = new_ranges.peek()
+                    && new_range.context.end < existing_range.context.start
+                {
+                    combined_ranges.push(new_range.clone());
+                    new_ranges.next();
+                }
+
+                if let Some(new_range) = new_ranges.peek()
+                    && new_range.context.start <= existing_range.context.end
+                {
+                    combined_ranges.push(existing_range)
+                }
+            }
+            combined_ranges.extend(new_ranges);
+            excerpt_ranges = combined_ranges;
+        }
+
+        excerpt_ranges.sort_by_key(|range| range.context.start);
+        Self::merge_excerpt_ranges(&excerpt_ranges)
     }
 
     pub fn set_excerpt_ranges_for_path(
@@ -297,7 +367,6 @@ impl MultiBuffer {
         index
     }
 
-    // todo!() re-instate nonshrinking version for project diff / diagnostics
     pub fn update_path_excerpts<'a>(
         &mut self,
         path_key: PathKey,
