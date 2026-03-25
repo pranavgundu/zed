@@ -6668,8 +6668,13 @@ impl MultiBufferSnapshot {
         assert!(range.start.buffer_id == range.end.buffer_id);
 
         let buffer_id = range.start.buffer_id;
-        self.path_key_index_for_buffer(buffer_id)
-            .map(|path_key_index| {
+        self.buffers
+            .get(&buffer_id)
+            .map(|buffer_state_snapshot| {
+                let path_key_index = buffer_state_snapshot.path_key_index;
+                let buffer_snapshot = &buffer_state_snapshot.buffer_snapshot;
+                let buffer_range = range.to_offset(buffer_snapshot);
+
                 let start = Anchor::in_buffer(path_key_index, range.start).to_offset(self);
                 let mut cursor = self.cursor::<MultiBufferOffset, BufferOffset>();
                 cursor.seek(&start);
@@ -6681,14 +6686,34 @@ impl MultiBufferSnapshot {
                     }
 
                     let region = cursor.region()?;
-                    if region.buffer.remote_id() != buffer_id {
+                    if region.buffer.remote_id() != buffer_id
+                        || region.buffer_range.start > BufferOffset(buffer_range.end)
+                    {
                         return None;
                     }
 
-                    let buffer_range = region
-                        .buffer
-                        .anchor_range_inside(region.buffer_range.clone());
-                    let multibuffer_range = Anchor::range_in_buffer(path_key_index, buffer_range);
+                    let start = region
+                        .buffer_range
+                        .start
+                        .max(BufferOffset(buffer_range.start));
+                    let mut end = region.buffer_range.end.min(BufferOffset(buffer_range.end));
+
+                    cursor.next();
+                    while let Some(region) = cursor.region()
+                        && region.is_main_buffer
+                        && region.buffer.remote_id() == buffer_id
+                        && region.buffer_range.start <= end
+                    {
+                        end = end
+                            .max(region.buffer_range.end)
+                            .min(BufferOffset(buffer_range.end));
+                        cursor.next();
+                    }
+
+                    let multibuffer_range = Anchor::range_in_buffer(
+                        path_key_index,
+                        buffer_snapshot.anchor_range_inside(start..end),
+                    );
                     Some(multibuffer_range)
                 })
             })

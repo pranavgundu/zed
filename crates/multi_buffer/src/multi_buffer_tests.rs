@@ -1179,14 +1179,8 @@ fn test_multibuffer_anchors(cx: &mut App) {
     );
     assert_eq!(Anchor::Min.to_offset(&old_snapshot), MultiBufferOffset(0));
     assert_eq!(Anchor::Min.to_offset(&old_snapshot), MultiBufferOffset(0));
-    assert_eq!(
-        Anchor::Max.to_offset(&old_snapshot),
-        MultiBufferOffset(10)
-    );
-    assert_eq!(
-        Anchor::Max.to_offset(&old_snapshot),
-        MultiBufferOffset(10)
-    );
+    assert_eq!(Anchor::Max.to_offset(&old_snapshot), MultiBufferOffset(10));
+    assert_eq!(Anchor::Max.to_offset(&old_snapshot), MultiBufferOffset(10));
 
     buffer_1.update(cx, |buffer, cx| {
         buffer.edit([(0..0, "W")], None, cx);
@@ -5368,6 +5362,126 @@ fn test_range_to_buffer_ranges(cx: &mut App) {
         "Should include trailing empty excerpts"
     );
     assert_eq!(ranges_half_open_max[1].1, BufferOffset(0)..BufferOffset(0));
+}
+
+#[gpui::test]
+async fn test_buffer_range_to_excerpt_ranges(cx: &mut TestAppContext) {
+    let base_text = indoc!(
+        "
+        aaa
+        bbb
+        ccc
+        ddd
+        eee
+        ppp
+        qqq
+        rrr
+        fff
+        ggg
+        hhh
+        "
+    );
+    let text = indoc!(
+        "
+        aaa
+        BBB
+        ddd
+        eee
+        ppp
+        qqq
+        rrr
+        FFF
+        ggg
+        hhh
+        "
+    );
+
+    let buffer = cx.new(|cx| Buffer::local(text, cx));
+    let diff = cx
+        .new(|cx| BufferDiff::new_with_base_text(base_text, &buffer.read(cx).text_snapshot(), cx));
+    cx.run_until_parked();
+
+    let multibuffer = cx.new(|cx| {
+        let mut multibuffer = MultiBuffer::new(Capability::ReadWrite);
+        multibuffer.set_excerpts_for_path(
+            PathKey::sorted(0),
+            buffer.clone(),
+            [
+                Point::new(0, 0)..Point::new(3, 3),
+                Point::new(7, 0)..Point::new(9, 3),
+            ],
+            0,
+            cx,
+        );
+        multibuffer.add_diff(diff.clone(), cx);
+        multibuffer
+    });
+
+    multibuffer.update(cx, |multibuffer, cx| {
+        multibuffer.expand_diff_hunks(vec![Anchor::Min..Anchor::Max], cx);
+    });
+    cx.run_until_parked();
+
+    let snapshot = multibuffer.read_with(cx, |multibuffer, cx| multibuffer.snapshot(cx));
+
+    let actual_diff = format_diff(
+        &snapshot.text(),
+        &snapshot.row_infos(MultiBufferRow(0)).collect::<Vec<_>>(),
+        &Default::default(),
+        None,
+    );
+    let expected_diff = indoc!(
+        "
+          aaa
+        - bbb
+        - ccc
+        + BBB
+          ddd
+          eee [\u{2193}]
+        - fff [\u{2191}]
+        + FFF
+          ggg
+          hhh [\u{2193}]"
+    );
+    pretty_assertions::assert_eq!(actual_diff, expected_diff);
+
+    let buffer_snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+
+    let query_spanning_deleted_hunk = buffer_snapshot.anchor_after(Point::new(0, 0))
+        ..buffer_snapshot.anchor_before(Point::new(1, 3));
+    assert_eq!(
+        snapshot
+            .buffer_range_to_excerpt_ranges(query_spanning_deleted_hunk)
+            .map(|range| range.to_point(&snapshot))
+            .collect::<Vec<_>>(),
+        vec![
+            Point::new(0, 0)..Point::new(1, 0),
+            Point::new(3, 0)..Point::new(3, 3),
+        ],
+    );
+
+    let query_within_contiguous_main_buffer = buffer_snapshot.anchor_after(Point::new(1, 0))
+        ..buffer_snapshot.anchor_before(Point::new(2, 3));
+    assert_eq!(
+        snapshot
+            .buffer_range_to_excerpt_ranges(query_within_contiguous_main_buffer)
+            .map(|range| range.to_point(&snapshot))
+            .collect::<Vec<_>>(),
+        vec![Point::new(3, 0)..Point::new(4, 3)],
+    );
+
+    let query_spanning_both_excerpts = buffer_snapshot.anchor_after(Point::new(2, 0))
+        ..buffer_snapshot.anchor_before(Point::new(8, 3));
+    assert_eq!(
+        snapshot
+            .buffer_range_to_excerpt_ranges(query_spanning_both_excerpts)
+            .map(|range| range.to_point(&snapshot))
+            .collect::<Vec<_>>(),
+        vec![
+            Point::new(4, 0)..Point::new(5, 3),
+            Point::new(7, 0)..Point::new(8, 3),
+        ],
+    );
 }
 
 #[gpui::test]
