@@ -654,12 +654,9 @@ impl Sidebar {
 
         let query = self.filter_editor.read(cx).text(cx);
 
-        // Derive active_entry from the active workspace's agent panel.
-        // Thread when the panel has a non-draft thread, Draft when the
-        // workspace has no active thread (or no panel at all).
-        // Only overwrite with Thread on a positive signal — if the panel
-        // transiently returns None while loading, keep the previous value
-        // so eager writes from user actions survive.
+        // Update active_entry to reflect the focused thread in the
+        // agent panel. If the panel has no focused thread, leave
+        // active_entry alone to preserve optimistic UI set by user actions.
         let panel_focused = active_workspace
             .as_ref()
             .and_then(|ws| ws.read(cx).panel::<AgentPanel>(cx))
@@ -2443,7 +2440,7 @@ impl Sidebar {
 
         // Delete from the store and clean up empty worktree workspaces.
         let delete_task = SidebarThreadMetadataStore::global(cx)
-            .update(cx, |store, cx| store.delete(session_id, cx));
+            .update(cx, |store, cx| store.delete(session_id.clone(), cx));
 
         cx.spawn_in(window, async move |this, cx| {
             delete_task.await?;
