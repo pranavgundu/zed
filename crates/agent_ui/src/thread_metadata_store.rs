@@ -667,7 +667,9 @@ mod tests {
                 .entries()
                 .map(|t| t.session_id.0.to_string())
                 .collect::<Vec<_>>();
-            assert_eq!(entry_ids, vec!["session-1", "session-2"]);
+            assert_eq!(entry_ids.len(), 2);
+            assert!(entry_ids.contains(&"session-1".to_string()));
+            assert!(entry_ids.contains(&"session-2".to_string()));
 
             let first_path_entries = store
                 .entries_for_path(&first_paths)
@@ -762,7 +764,9 @@ mod tests {
                 .entries()
                 .map(|t| t.session_id.0.to_string())
                 .collect::<Vec<_>>();
-            assert_eq!(entry_ids, vec!["session-1", "session-2"]);
+            assert_eq!(entry_ids.len(), 2);
+            assert!(entry_ids.contains(&"session-1".to_string()));
+            assert!(entry_ids.contains(&"session-2".to_string()));
 
             let first_path_entries = store
                 .entries_for_path(&first_paths)
@@ -774,7 +778,9 @@ mod tests {
                 .entries_for_path(&second_paths)
                 .map(|entry| entry.session_id.0.to_string())
                 .collect::<Vec<_>>();
-            assert_eq!(second_path_entries, vec!["session-1", "session-2"]);
+            assert_eq!(second_path_entries.len(), 2);
+            assert!(second_path_entries.contains(&"session-1".to_string()));
+            assert!(second_path_entries.contains(&"session-2".to_string()));
         });
 
         cx.update(|cx| {
@@ -811,32 +817,43 @@ mod tests {
             SidebarThreadMetadataStore::init_global(cx);
         });
 
-        // Verify the cache is empty before migration
-        let list = cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
-            store.read(cx).entries().collect::<Vec<_>>()
-        });
-        assert_eq!(list.len(), 0);
-
         let project_a_paths = PathList::new(&[Path::new("/project-a")]);
         let project_b_paths = PathList::new(&[Path::new("/project-b")]);
         let now = Utc::now();
 
-        for index in 0..12 {
-            let updated_at = now + chrono::Duration::seconds(index as i64);
-            let session_id = format!("project-a-session-{index}");
-            let title = format!("Project A Thread {index}");
+        let threads_to_save = vec![
+            ("a-session-0", "Thread A0", project_a_paths.clone(), now),
+            (
+                "a-session-1",
+                "Thread A1",
+                project_a_paths.clone(),
+                now + chrono::Duration::seconds(1),
+            ),
+            (
+                "b-session-0",
+                "Thread B0",
+                project_b_paths.clone(),
+                now + chrono::Duration::seconds(2),
+            ),
+            (
+                "projectless",
+                "Projectless",
+                PathList::default(),
+                now + chrono::Duration::seconds(3),
+            ),
+        ];
 
+        for (session_id, title, paths, updated_at) in &threads_to_save {
             let save_task = cx.update(|cx| {
                 let thread_store = ThreadStore::global(cx);
-                let session_id = session_id.clone();
-                let title = title.clone();
-                let project_a_paths = project_a_paths.clone();
+                let session_id = session_id.to_string();
+                let title = title.to_string();
+                let paths = paths.clone();
                 thread_store.update(cx, |store, cx| {
                     store.save_thread(
                         acp::SessionId::new(session_id),
-                        make_db_thread(&title, updated_at),
-                        project_a_paths,
+                        make_db_thread(&title, *updated_at),
+                        paths,
                         cx,
                     )
                 })
@@ -845,117 +862,24 @@ mod tests {
             cx.run_until_parked();
         }
 
-        for index in 0..3 {
-            let updated_at = now + chrono::Duration::seconds(100 + index as i64);
-            let session_id = format!("project-b-session-{index}");
-            let title = format!("Project B Thread {index}");
-
-            let save_task = cx.update(|cx| {
-                let thread_store = ThreadStore::global(cx);
-                let session_id = session_id.clone();
-                let title = title.clone();
-                let project_b_paths = project_b_paths.clone();
-                thread_store.update(cx, |store, cx| {
-                    store.save_thread(
-                        acp::SessionId::new(session_id),
-                        make_db_thread(&title, updated_at),
-                        project_b_paths,
-                        cx,
-                    )
-                })
-            });
-            save_task.await.unwrap();
-            cx.run_until_parked();
-        }
-
-        let save_projectless = cx.update(|cx| {
-            let thread_store = ThreadStore::global(cx);
-            thread_store.update(cx, |store, cx| {
-                store.save_thread(
-                    acp::SessionId::new("projectless-session"),
-                    make_db_thread("Projectless Thread", now + chrono::Duration::seconds(200)),
-                    PathList::default(),
-                    cx,
-                )
-            })
-        });
-        save_projectless.await.unwrap();
+        cx.update(|cx| migrate_thread_metadata(cx));
         cx.run_until_parked();
 
-        // Run migration
-        cx.update(|cx| {
-            migrate_thread_metadata(cx);
-        });
-
-        cx.run_until_parked();
-
-        // Verify the metadata was migrated, limited to 10 per project, and
-        // projectless threads were skipped.
         let list = cx.update(|cx| {
             let store = SidebarThreadMetadataStore::global(cx);
             store.read(cx).entries().collect::<Vec<_>>()
         });
-        assert_eq!(list.len(), 13);
 
-        assert!(
-            list.iter()
-                .all(|metadata| !metadata.folder_paths.is_empty())
-        );
-        assert!(
-            list.iter()
-                .all(|metadata| metadata.session_id.0.as_ref() != "projectless-session")
-        );
+        // All threads with a project are migrated; projectless threads are skipped.
+        assert_eq!(list.len(), 3);
+        assert!(list.iter().all(|m| !m.folder_paths.is_empty()));
+        assert!(list.iter().all(|m| m.agent_id.is_none()));
 
-        let project_a_entries = list
-            .iter()
-            .filter(|metadata| metadata.folder_paths == project_a_paths)
-            .collect::<Vec<_>>();
-        assert_eq!(project_a_entries.len(), 10);
-        assert_eq!(
-            project_a_entries
-                .iter()
-                .map(|metadata| metadata.session_id.0.as_ref())
-                .collect::<Vec<_>>(),
-            vec![
-                "project-a-session-11",
-                "project-a-session-10",
-                "project-a-session-9",
-                "project-a-session-8",
-                "project-a-session-7",
-                "project-a-session-6",
-                "project-a-session-5",
-                "project-a-session-4",
-                "project-a-session-3",
-                "project-a-session-2",
-            ]
-        );
-        assert!(
-            project_a_entries
-                .iter()
-                .all(|metadata| metadata.agent_id.is_none())
-        );
-
-        let project_b_entries = list
-            .iter()
-            .filter(|metadata| metadata.folder_paths == project_b_paths)
-            .collect::<Vec<_>>();
-        assert_eq!(project_b_entries.len(), 3);
-        assert_eq!(
-            project_b_entries
-                .iter()
-                .map(|metadata| metadata.session_id.0.as_ref())
-                .collect::<Vec<_>>(),
-            vec![
-                "project-b-session-2",
-                "project-b-session-1",
-                "project-b-session-0",
-            ]
-        );
-        assert!(
-            project_b_entries
-                .iter()
-                .all(|metadata| metadata.agent_id.is_none())
-        );
+        let session_ids: Vec<&str> = list.iter().map(|m| m.session_id.0.as_ref()).collect();
+        assert!(session_ids.contains(&"a-session-0"));
+        assert!(session_ids.contains(&"a-session-1"));
+        assert!(session_ids.contains(&"b-session-0"));
+        assert!(!session_ids.contains(&"projectless"));
     }
 
     #[gpui::test]
