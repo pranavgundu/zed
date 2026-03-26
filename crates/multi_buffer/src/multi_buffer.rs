@@ -19,11 +19,11 @@ use collections::{BTreeMap, Bound, HashMap, HashSet};
 use gpui::{App, Context, Entity, EventEmitter};
 use itertools::Itertools;
 use language::{
-    AutoindentMode, BracketMatch, Buffer, BufferChunks, BufferRow, BufferSnapshot, Capability,
-    CharClassifier, CharKind, CharScopeContext, Chunk, CursorShape, DiagnosticEntryRef, File,
-    IndentGuideSettings, IndentSize, Language, LanguageScope, OffsetRangeExt, OffsetUtf16, Outline,
-    OutlineItem, Point, PointUtf16, Selection, TextDimension, TextObject, ToOffset as _,
-    ToPoint as _, TransactionId, TreeSitterOptions, Unclipped,
+    AutoindentMode, Buffer, BufferChunks, BufferRow, BufferSnapshot, Capability, CharClassifier,
+    CharKind, CharScopeContext, Chunk, CursorShape, DiagnosticEntryRef, File, IndentGuideSettings,
+    IndentSize, Language, LanguageScope, OffsetRangeExt, OffsetUtf16, Outline, OutlineItem, Point,
+    PointUtf16, Selection, TextDimension, TextObject, ToOffset as _, ToPoint as _, TransactionId,
+    TreeSitterOptions, Unclipped,
     language_settings::{AllLanguageSettings, LanguageSettings},
 };
 
@@ -52,11 +52,10 @@ use std::{
 };
 use sum_tree::{Bias, Cursor, Dimension, Dimensions, SumTree, TreeMap};
 use text::{
-    AnchorRangeExt as _, BufferId, Edit, LineIndent, TextSummary,
+    BufferId, Edit, LineIndent, TextSummary,
     subscription::{Subscription, Topic},
 };
 use theme::SyntaxTheme;
-use util::maybe;
 use ztracing::instrument;
 
 pub use self::path_key::PathKey;
@@ -160,7 +159,6 @@ pub type MultiBufferPoint = Point;
 /// ExcerptOffset is offset into the non-deleted text of the multibuffer
 type ExcerptOffset = ExcerptDimension<MultiBufferOffset>;
 /// ExcerptOffset is based on the non-deleted text of the multibuffer
-type ExcerptPoint = ExcerptDimension<Point>;
 
 #[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialOrd, PartialEq, Hash, serde::Deserialize)]
 #[serde(transparent)]
@@ -815,7 +813,7 @@ impl ExcerptSummary {
         }
     }
 
-    pub fn len(&self) -> ExcerptOffset {
+    fn len(&self) -> ExcerptOffset {
         ExcerptDimension(self.text.len)
     }
 }
@@ -5459,25 +5457,6 @@ impl MultiBufferSnapshot {
         self.non_text_state_update_count
     }
 
-    fn excerpt_range_to_output_range(
-        &self,
-        range: Range<ExcerptOffset>,
-    ) -> Range<MultiBufferOffset> {
-        if self.diff_transforms.is_empty() {
-            return range.start.0..range.end.0;
-        }
-        let mut cursor = self
-            .diff_transforms
-            .cursor::<DiffTransforms<MultiBufferOffset>>(());
-        cursor.seek(&range.start, Bias::Right);
-        let mut start = cursor.start().output_dimension;
-        start += range.start - cursor.start().excerpt_dimension;
-        cursor.seek_forward(&range.end, Bias::Right);
-        let mut end = cursor.start().output_dimension;
-        end += range.end - cursor.start().excerpt_dimension;
-        start.0..end.0
-    }
-
     /// Allows converting several ranges within the same excerpt between buffer offsets and multibuffer offsets.
     ///
     /// If the input range is contained in a single excerpt, invokes the callback with the full range of that excerpt
@@ -7255,21 +7234,6 @@ impl Excerpt {
             && self
                 .range
                 .contains(&anchor.text_anchor(), self.buffer_snapshot(snapshot))
-    }
-
-    /// The [`Excerpt`]'s start offset in its [`Buffer`]
-    fn buffer_start_offset(&self, snapshot: &MultiBufferSnapshot) -> BufferOffset {
-        BufferOffset(
-            self.range
-                .context
-                .start
-                .to_offset(self.buffer_snapshot(snapshot)),
-        )
-    }
-
-    /// The [`Excerpt`]'s end offset in its [`Buffer`]
-    fn buffer_end_offset(&self, snapshot: &MultiBufferSnapshot) -> BufferOffset {
-        self.buffer_start_offset(snapshot) + self.text_summary.len
     }
 
     fn start_anchor(&self) -> ExcerptAnchor {

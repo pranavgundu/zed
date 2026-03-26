@@ -2,7 +2,6 @@ use collections::HashMap;
 use gpui::{AppContext, Context, Entity, Window};
 use itertools::Itertools;
 use language::Buffer;
-use multi_buffer::MultiBufferOffset;
 use std::{ops::Range, sync::Arc, time::Duration};
 use text::{Anchor, AnchorRangeExt, Bias, BufferId, ToOffset, ToPoint};
 use util::ResultExt;

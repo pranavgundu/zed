@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use collections::HashMap;
 use gpui::Pixels;
 use itertools::Itertools as _;
 use language::{Bias, Point, PointUtf16, Selection, SelectionGoal};

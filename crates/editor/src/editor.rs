@@ -3036,7 +3036,10 @@ impl Editor {
     fn edit_prediction_cursor_popover_prefers_preview(
         &self,
         completion: &EditPredictionState,
+        cx: &App,
     ) -> bool {
+        let multibuffer_snapshot = self.buffer.read(cx).snapshot(cx);
+
         match &completion.completion {
             EditPrediction::Edit {
                 edits, snapshot, ..
@@ -3045,8 +3048,13 @@ impl Editor {
                 let mut end_row: Option<u32> = None;
 
                 for (range, text) in edits {
-                    let edit_start_row = range.start.text_anchor.to_point(snapshot).row;
-                    let old_end_row = range.end.text_anchor.to_point(snapshot).row;
+                    let Some((_, range)) =
+                        multibuffer_snapshot.anchor_range_to_buffer_anchor_range(range.clone())
+                    else {
+                        continue;
+                    };
+                    let edit_start_row = range.start.to_point(snapshot).row;
+                    let old_end_row = range.end.to_point(snapshot).row;
                     let inserted_newline_count = text
                         .as_ref()
                         .chars()
@@ -3095,7 +3103,7 @@ impl Editor {
                 .active_edit_prediction
                 .as_ref()
                 .filter(|completion| {
-                    self.edit_prediction_cursor_popover_prefers_preview(completion)
+                    self.edit_prediction_cursor_popover_prefers_preview(completion, cx)
                 })
                 .map_or(EditPredictionKeybindAction::Accept, |_| {
                     EditPredictionKeybindAction::Preview
@@ -5935,33 +5943,12 @@ impl Editor {
         }
     }
 
-    pub fn multi_buffer_visible_range(
-        &self,
-        display_snapshot: &DisplaySnapshot,
-        cx: &App,
-    ) -> Range<Point> {
-        let visible_start = self
-            .scroll_manager
-            .native_anchor(display_snapshot, cx)
-            .anchor
-            .to_point(display_snapshot.buffer_snapshot())
-            .to_display_point(display_snapshot);
-
-        let mut target_end = visible_start;
-        *target_end.row_mut() += self.visible_line_count().unwrap_or(0.).ceil() as u32;
-
-        visible_start.to_point(display_snapshot)
-            ..display_snapshot
-                .clip_point(target_end, Bias::Right)
-                .to_point(display_snapshot)
-    }
-
     pub fn visible_buffers(&self, cx: &mut Context<Editor>) -> Vec<Entity<Buffer>> {
-        let project = self.project().cloned();
         let display_snapshot = self.display_snapshot(cx);
         let visible_range = self.multi_buffer_visible_range(&display_snapshot, cx);
         let multi_buffer = self.buffer().read(cx);
-        multi_buffer_snapshot
+        display_snapshot
+            .buffer_snapshot()
             .range_to_buffer_ranges(visible_range)
             .into_iter()
             .filter(|(_, excerpt_visible_range, _)| !excerpt_visible_range.is_empty())
@@ -5972,20 +5959,18 @@ impl Editor {
     pub fn visible_buffer_ranges(
         &self,
         cx: &mut Context<Editor>,
-    ) -> Vec<(BufferSnapshot, Range<usize>)> {
+    ) -> Vec<(
+        BufferSnapshot,
+        Range<BufferOffset>,
+        ExcerptRange<text::Anchor>,
+    )> {
         let display_snapshot = self.display_snapshot(cx);
-        let (visible_range, multi_buffer_snapshot) =
-            self.multi_buffer_visible_range(&display_snapshot, cx);
-        multi_buffer_snapshot
+        let visible_range = self.multi_buffer_visible_range(&display_snapshot, cx);
+        display_snapshot
+            .buffer_snapshot()
             .range_to_buffer_ranges(visible_range)
             .into_iter()
             .filter(|(_, excerpt_visible_range, _)| !excerpt_visible_range.is_empty())
-            .map(|(buffer, excerpt_visible_range, _)| {
-                (
-                    buffer,
-                    excerpt_visible_range.start.0..excerpt_visible_range.end.0,
-                )
-            })
             .collect()
     }
 
@@ -6133,7 +6118,7 @@ impl Editor {
         let language = buffer_snapshot
             .language_at(buffer_position)
             .map(|language| language.name());
-        let language_settings = multibuffer_snapshot.language_settings_at(buffer_position, cx);
+        let language_settings = multibuffer_snapshot.language_settings_at(multibuffer_position, cx);
         let completion_settings = language_settings.completions.clone();
 
         let show_completions_on_input = self
@@ -6694,17 +6679,17 @@ impl Editor {
 
             ranges.push(range.clone());
 
-            let start_anchor = snapshot.anchor_before(range.start);
-            let end_anchor = snapshot.anchor_after(range.end);
+            let start_anchor = multibuffer_snapshot.anchor_before(range.start);
+            let end_anchor = multibuffer_snapshot.anchor_after(range.end);
 
             if let Some((buffer_snapshot_2, anchor_range)) =
                 multibuffer_snapshot.anchor_range_to_buffer_anchor_range(start_anchor..end_anchor)
                 && buffer_snapshot_2.remote_id() == buffer_snapshot.remote_id()
             {
+                all_commit_ranges.push(anchor_range.clone());
                 if !self.linked_edit_ranges.is_empty() {
                     linked_edits.push(&self, anchor_range, text.clone(), cx);
                 }
-                all_commit_ranges.push(anchor_range.clone());
             }
         }
 
@@ -7368,7 +7353,7 @@ impl Editor {
                 .timer(CODE_ACTIONS_DEBOUNCE_TIMEOUT)
                 .await;
 
-            let (start_buffer, start, _, end, newest_selection) = this
+            let (start_buffer, start, _, end, _newest_selection) = this
                 .update(cx, |this, cx| {
                     let newest_selection = this.selections.newest_anchor().clone();
                     if newest_selection.head().diff_base_anchor().is_some() {
@@ -8978,9 +8963,6 @@ impl Editor {
         let snapshot = self.snapshot(window, cx);
 
         let multi_buffer_snapshot = snapshot.buffer_snapshot();
-        let Some(project) = self.project() else {
-            return breakpoint_display_points;
-        };
 
         let range = snapshot.display_point_to_point(DisplayPoint::new(range.start, 0), Bias::Left)
             ..snapshot.display_point_to_point(DisplayPoint::new(range.end, 0), Bias::Right);
@@ -18556,9 +18538,9 @@ impl Editor {
         let editor_snapshot = self.snapshot(window, cx);
 
         // We don't care about multi-buffer symbols
-        let Some(buffer_snapshot) = editor_snapshot.as_singleton() else {
+        if !editor_snapshot.is_singleton() {
             return Task::ready(Ok(()));
-        };
+        }
 
         let cursor_offset = self
             .selections
@@ -18580,7 +18562,7 @@ impl Editor {
             let buffer_range = |range: &Range<_>| {
                 Some(
                     multi_snapshot
-                        .buffer_anchor_range_to_anchor_range(range)?
+                        .buffer_anchor_range_to_anchor_range(range.clone())?
                         .to_offset(multi_snapshot),
                 )
             };
@@ -24246,7 +24228,7 @@ impl Editor {
                 self.update_lsp_data(Some(buffer_id), window, cx);
                 self.refresh_inlay_hints(InlayHintRefreshReason::NewLinesShown, cx);
                 self.refresh_runnables(None, window, cx);
-                self.fetched_tree_sitter_chunks.remove(&buffer_id);
+                self.bracket_fetched_tree_sitter_chunks.remove(&buffer_id);
                 self.colorize_brackets(false, cx);
                 self.refresh_selected_text_highlights(&self.display_snapshot(cx), true, window, cx);
                 cx.emit(EditorEvent::BufferRangesUpdated {
@@ -24596,7 +24578,6 @@ impl Editor {
                 position,
                 line_offset_from_top,
             }) => {
-                let multi_buffer_snapshot = self.buffer.read(cx).snapshot(cx);
                 if let Some(buffer) = self.buffer.read(cx).buffer(anchor.buffer_id) {
                     let buffer_snapshot = buffer.read(cx).snapshot();
                     let jump_to_point = if buffer_snapshot.can_resolve(&anchor) {
@@ -27566,7 +27547,11 @@ impl SemanticsProvider for WeakEntity<Project> {
         position: text::Anchor,
         cx: &mut App,
     ) -> Task<Result<Option<Range<text::Anchor>>>> {
-        self.update(cx, |project, cx| {
+        let Some(this) = self.upgrade() else {
+            return Task::ready(Ok(None));
+        };
+
+        this.update(cx, |project, cx| {
             let buffer = buffer.clone();
             let task = project.prepare_rename(buffer.clone(), position, cx);
             cx.spawn(async move |_, cx| {

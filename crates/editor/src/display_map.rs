@@ -90,7 +90,6 @@ pub use fold_map::{
 };
 pub use inlay_map::{InlayOffset, InlayPoint};
 pub use invisibles::{is_invisible, replacement};
-use language::BufferSnapshot;
 pub use wrap_map::{WrapPoint, WrapRow, WrapSnapshot};
 
 use collections::{HashMap, HashSet, IndexSet};
@@ -125,7 +124,7 @@ use std::{
     fmt::Debug,
     iter,
     num::NonZeroU32,
-    ops::{self, Add, Bound, Range, Sub},
+    ops::{self, Add, Range, Sub},
     sync::Arc,
 };
 
@@ -1903,11 +1902,10 @@ impl DisplaySnapshot {
         multibuffer_range: Range<MultiBufferOffset>,
         syntax_theme: &theme::SyntaxTheme,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
-        let buffer_id = buffer.remote_id();
         let multibuffer = self.buffer_snapshot();
 
         let chunks = custom_highlights::CustomHighlightsChunks::new(
-            multibuffer_range.to_offset(multibuffer),
+            multibuffer_range,
             true,
             None,
             Some(&self.semantic_token_highlights),

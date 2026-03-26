@@ -11,8 +11,8 @@ use ztracing::instrument;
 
 use crate::{
     Anchor, BufferState, BufferStateSnapshot, DiffChangeKind, Event, Excerpt, ExcerptOffset,
-    ExcerptRange, ExcerptSummary, ExpandExcerptDirection, MultiBuffer, MultiBufferDimension,
-    MultiBufferOffset, PathKeyIndex, ToOffset, build_excerpt_ranges,
+    ExcerptRange, ExcerptSummary, ExpandExcerptDirection, MultiBuffer, MultiBufferOffset,
+    PathKeyIndex, build_excerpt_ranges,
 };
 
 #[derive(PartialEq, Eq, Ord, PartialOrd, Clone, Hash, Debug)]

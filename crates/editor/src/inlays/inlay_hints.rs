@@ -110,14 +110,15 @@ impl LspInlayHintData {
         &mut self,
         buffer_ids: &HashSet<BufferId>,
         current_hints: impl IntoIterator<Item = Inlay>,
+        snapshot: &MultiBufferSnapshot,
     ) {
         for buffer_id in buffer_ids {
             self.hint_refresh_tasks.remove(buffer_id);
             self.hint_chunk_fetching.remove(buffer_id);
         }
         for hint in current_hints {
-            if let Some(buffer_id) = hint.position.text_anchor.buffer_id {
-                if buffer_ids.contains(&buffer_id) {
+            if let Some((text_anchor, _)) = snapshot.anchor_to_buffer_anchor(hint.position) {
+                if buffer_ids.contains(&text_anchor.buffer_id) {
                     self.added_hints.remove(&hint.id);
                 }
             }
@@ -351,7 +352,7 @@ impl Editor {
                 );
 
                 semantics_provider.invalidate_inlay_hints(&invalidate_hints_for_buffers, cx);
-                visible_excerpts.retain(|(buffer_snapshot, _)| {
+                visible_excerpts.retain(|(buffer_snapshot, _, _)| {
                     buffer_snapshot.language() == Some(&affected_language)
                 });
                 false
@@ -371,6 +372,7 @@ impl Editor {
                 inlay_hints.clear_for_buffers(
                     &invalidate_hints_for_buffers,
                     Self::visible_inlay_hints(self.display_map.read(cx)),
+                    &multi_buffer.read(cx).snapshot(cx),
                 );
             }
         }
@@ -379,7 +381,7 @@ impl Editor {
             .extend(invalidate_hints_for_buffers);
 
         let mut buffers_to_query = HashMap::default();
-        for (buffer_snapshot, visible_range) in visible_excerpts {
+        for (buffer_snapshot, visible_range, _) in visible_excerpts {
             let buffer_id = buffer_snapshot.remote_id();
 
             if !self.registered_buffers.contains_key(&buffer_id) {
@@ -791,6 +793,7 @@ impl Editor {
         new_hints: Vec<(Range<BufferRow>, anyhow::Result<CacheInlayHints>)>,
         cx: &mut Context<Self>,
     ) {
+        let multi_buffer_snapshot = self.buffer.read(cx).snapshot(cx);
         let visible_inlay_hint_ids = Self::visible_inlay_hints(self.display_map.read(cx))
             .filter(|inlay| {
                 multi_buffer_snapshot
@@ -2297,7 +2300,7 @@ pub mod tests {
             1,
             "Single buffer should produce a single excerpt with visible range"
         );
-        let (buffer_snapshot, visible_range) = ranges.into_iter().next().unwrap();
+        let (buffer_snapshot, visible_range, _) = ranges.into_iter().next().unwrap();
         visible_range.to_point(&buffer_snapshot)
     }
 

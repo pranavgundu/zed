@@ -25689,7 +25689,7 @@ async fn test_folded_buffers_cleared_on_excerpts_removed(cx: &mut TestAppContext
     // `multi_buffer::Event::ExcerptsRemoved` event is emitted, which should be
     // picked up by the editor and update the display map accordingly.
     multi_buffer.update(cx, |multi_buffer, cx| {
-        multi_buffer.remove_excerpts_for_path(PathKey::sorted(0), cx)
+        multi_buffer.remove_excerpts(PathKey::sorted(0), cx)
     });
     assert!(!editor.update(cx, |editor, cx| editor.has_any_buffer_folded(cx)));
 }

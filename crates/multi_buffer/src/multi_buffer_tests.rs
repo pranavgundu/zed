@@ -2887,6 +2887,8 @@ impl ReferenceMultibuffer {
         line_count: u32,
         cx: &mut App,
     ) {
+        use text::AnchorRangeExt as _;
+
         if line_count == 0 || excerpts.is_empty() {
             return;
         }
@@ -3030,6 +3032,8 @@ impl ReferenceMultibuffer {
     }
 
     fn expected_content(&self, cx: &App) -> (String, Vec<RowInfo>, HashSet<MultiBufferRow>) {
+        use util::maybe;
+
         let mut text = String::new();
         let mut regions = Vec::<ReferenceRegion>::new();
         let mut excerpt_boundary_rows = HashSet::default();
@@ -3688,7 +3692,7 @@ async fn test_random_multibuffer(cx: &mut TestAppContext, mut rng: StdRng) {
                     .map(ExcerptRange::new)
                     .collect::<Vec<_>>();
                 let path = cx.update(|cx| PathKey::for_buffer(&excerpt_buffer, cx));
-                let path_key_index = multibuffer.update(cx, |multibuffer, cx| {
+                let path_key_index = multibuffer.update(cx, |multibuffer, _| {
                     multibuffer.get_or_create_path_key_index(&path)
                 });
 
@@ -5644,7 +5648,7 @@ fn test_range_to_buffer_ranges(cx: &mut App) {
 
     let buffer_empty = cx.new(|cx| Buffer::local("", cx));
     let multibuffer_trailing_empty = cx.new(|_| MultiBuffer::new(Capability::ReadWrite));
-    let (te_excerpt_1_info, te_excerpt_2_info) =
+    let (_te_excerpt_1_info, _te_excerpt_2_info) =
         multibuffer_trailing_empty.update(cx, |multibuffer, cx| {
             multibuffer.set_excerpts_for_path(
                 PathKey::sorted(0),

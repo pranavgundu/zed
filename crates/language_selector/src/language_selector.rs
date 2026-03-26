@@ -414,10 +414,10 @@ mod tests {
     ) -> Entity<Editor> {
         let editor = open_new_buffer_editor(workspace, project, cx).await;
         // Ensure the buffer has no language after the editor is created
-        let (_, buffer, _) = editor.read_with(cx, |editor, cx| {
+        let buffer = editor.read_with(cx, |editor, cx| {
             editor
-                .active_excerpt(cx)
-                .expect("editor should have an active excerpt")
+                .active_buffer(cx)
+                .expect("editor should have an active buffer")
         });
         buffer.update(cx, |buffer, cx| {
             buffer.set_language(None, cx);

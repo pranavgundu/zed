@@ -229,7 +229,7 @@ impl GoToLine {
         let character = query_char.unwrap_or(0).saturating_sub(1);
 
         let target_multi_buffer_row = MultiBufferRow(row);
-        let (buffer_snapshot, target_in_buffer, _) = snapshot.point_to_buffer_point(Point::new(
+        let (buffer_snapshot, target_in_buffer) = snapshot.point_to_buffer_point(Point::new(
             target_multi_buffer_row.min(snapshot.max_row()).0,
             0,
         ))?;

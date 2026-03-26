@@ -10,7 +10,6 @@ use language::Buffer;
 use language::Language;
 use lsp::LanguageServerId;
 use lsp::LanguageServerName;
-use multi_buffer::Anchor;
 use project::LanguageServerToQuery;
 use project::LocationLink;
 use project::Project;
@@ -49,7 +48,7 @@ where
             Some((selection.head(), text_anchor))
         })
         .unique_by(|(_, anchor)| *anchor)
-        .find_map(|(trigger_anchor, text_anchor)| {
+        .find_map(|(_trigger_anchor, text_anchor)| {
             let buffer = editor.buffer().read(cx).buffer(text_anchor.buffer_id)?;
             let language = buffer.read(cx).language_at(text_anchor)?;
             if filter_language(&language) {

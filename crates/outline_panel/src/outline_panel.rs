@@ -1,7 +1,7 @@
 mod outline_panel_settings;
 
 use anyhow::Context as _;
-use collections::{BTreeSet, HashMap, HashSet, hash_map};
+use collections::{BTreeSet, HashMap, HashSet};
 use db::kvp::KeyValueStore;
 use editor::{
     AnchorRangeExt, Bias, DisplayPoint, Editor, EditorEvent, ExcerptRange, MultiBufferSnapshot,
@@ -1699,7 +1699,7 @@ impl OutlinePanel {
             }
         }
 
-        for (&buffer_id, buffer) in &self.buffers {
+        for (_buffer_id, buffer) in &self.buffers {
             match &buffer.outlines {
                 OutlineState::Outlines(outlines) => {
                     for outline in outlines {
@@ -3177,7 +3177,7 @@ impl OutlinePanel {
         let editor_snapshot = editor.update(cx, |editor, cx| editor.snapshot(window, cx));
         let multi_buffer = editor.read(cx).buffer();
         let multi_buffer_snapshot = multi_buffer.read(cx).snapshot(cx);
-        let anchor = editor.update(cx, |editor, cx| editor.selections.newest_anchor().head());
+        let anchor = editor.update(cx, |editor, _| editor.selections.newest_anchor().head());
         let selection_display_point = anchor.to_display_point(&editor_snapshot);
         let (anchor, _) = multi_buffer_snapshot.anchor_to_buffer_anchor(anchor)?;
 
@@ -3896,7 +3896,7 @@ impl OutlinePanel {
                                 } else {
                                     None
                                 };
-                            if let Some((buffer_id, entry_excerpts)) = excerpts_to_consider
+                            if let Some((buffer_id, _entry_excerpts)) = excerpts_to_consider
                                 && !active_editor.read(cx).is_buffer_folded(buffer_id, cx)
                             {
                                 outline_panel.add_buffer_entries(

@@ -7,10 +7,9 @@ use std::ops::Range;
 use crate::{Editor, HighlightKey};
 use collections::{HashMap, HashSet};
 use gpui::{AppContext as _, Context, HighlightStyle};
-use itertools::Itertools;
 use language::{BufferRow, BufferSnapshot, language_settings::LanguageSettings};
-use multi_buffer::Anchor;
-use text::BufferId;
+use multi_buffer::{Anchor, BufferOffset, ExcerptRange, MultiBufferSnapshot};
+use text::{BufferId, OffsetRangeExt as _};
 use ui::{ActiveTheme, utils::ensure_minimum_contrast};
 
 impl Editor {
@@ -27,9 +26,13 @@ impl Editor {
         let multi_buffer_snapshot = self.buffer().read(cx).snapshot(cx);
 
         let visible_excerpts = self.visible_buffer_ranges(cx);
-        let excerpt_data: Vec<(BufferSnapshot, Range<usize>)> = visible_excerpts
+        let excerpt_data: Vec<(
+            BufferSnapshot,
+            Range<BufferOffset>,
+            ExcerptRange<text::Anchor>,
+        )> = visible_excerpts
             .into_iter()
-            .filter(|(buffer_snapshot, buffer_range)| {
+            .filter(|(buffer_snapshot, _, _)| {
                 let Some(buffer) = self.buffer().read(cx).buffer(buffer_snapshot.remote_id())
                 else {
                     return false;
@@ -40,7 +43,7 @@ impl Editor {
 
         let mut fetched_tree_sitter_chunks = excerpt_data
             .iter()
-            .filter_map(|(buffer_snapshot, _)| {
+            .filter_map(|(buffer_snapshot, _, _)| {
                 Some((
                     buffer_snapshot.remote_id(),
                     self.bracket_fetched_tree_sitter_chunks
@@ -54,12 +57,13 @@ impl Editor {
             let bracket_matches_by_accent: HashMap<usize, Vec<Range<Anchor>>> =
                 excerpt_data.into_iter().fold(
                     HashMap::default(),
-                    |mut acc, (buffer_snapshot, buffer_range)| {
+                    |mut acc, (buffer_snapshot, buffer_range, excerpt_range)| {
                         let fetched_chunks = fetched_tree_sitter_chunks
                             .entry(buffer_snapshot.remote_id())
                             .or_default();
 
                         let brackets_by_accent = compute_bracket_ranges(
+                            &multi_buffer_snapshot,
                             &buffer_snapshot,
                             buffer_range,
                             excerpt_range,
@@ -135,14 +139,20 @@ impl Editor {
 }
 
 fn compute_bracket_ranges(
+    multi_buffer_snapshot: &MultiBufferSnapshot,
     buffer_snapshot: &BufferSnapshot,
-    buffer_range: Range<usize>,
-    excerpt_range: ExcerptRange<usize>,
+    buffer_range: Range<BufferOffset>,
+    excerpt_range: ExcerptRange<text::Anchor>,
     fetched_chunks: &mut HashSet<Range<BufferRow>>,
     accents_count: usize,
 ) -> Vec<(usize, Vec<Range<Anchor>>)> {
+    let context = excerpt_range.context.to_offset(buffer_snapshot);
+
     buffer_snapshot
-        .fetch_bracket_ranges(buffer_range.clone(), Some(fetched_chunks))
+        .fetch_bracket_ranges(
+            buffer_range.start.0..buffer_range.end.0,
+            Some(fetched_chunks),
+        )
         .into_iter()
         .flat_map(|(chunk_range, pairs)| {
             if fetched_chunks.insert(chunk_range) {
@@ -157,33 +167,25 @@ fn compute_bracket_ranges(
             let buffer_open_range =
                 if context.start <= pair.open_range.start && pair.open_range.end <= context.end {
                     let anchors = buffer_snapshot.anchor_range_inside(pair.open_range);
-                    Some(
-                        multi_buffer_snapshot.anchor_in_buffer(anchors.start)?
-                            ..multi_buffer_snapshot.anchor_in_buffer(anchors.end)?,
-                    )
+                    multi_buffer_snapshot.anchor_in_buffer(anchors.start)?
+                        ..multi_buffer_snapshot.anchor_in_buffer(anchors.end)?
                 } else {
-                    None
+                    return None;
                 };
 
             let buffer_close_range =
                 if context.start <= pair.close_range.start && pair.close_range.end <= context.end {
                     let anchors = buffer_snapshot.anchor_range_inside(pair.close_range);
-                    Some(
-                        multi_buffer_snapshot.anchor_in_buffer(anchors.start)?
-                            ..multi_buffer_snapshot.anchor_in_buffer(anchors.end)?,
-                    )
+                    multi_buffer_snapshot.anchor_in_buffer(anchors.start)?
+                        ..multi_buffer_snapshot.anchor_in_buffer(anchors.end)?
                 } else {
-                    None
+                    return None;
                 };
 
-            if buffer_open_range.is_none() && buffer_close_range.is_none() {
-                None
-            } else {
-                Some((
-                    color_index % accents_count,
-                    [buffer_open_range, buffer_close_range],
-                ))
-            }
+            Some((
+                color_index % accents_count,
+                vec![buffer_open_range, buffer_close_range],
+            ))
         })
         .collect()
 }

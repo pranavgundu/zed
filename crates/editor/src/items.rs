@@ -17,7 +17,6 @@ use gpui::{
     AnyElement, App, AsyncWindowContext, Context, Entity, EntityId, EventEmitter, Font,
     IntoElement, ParentElement, Pixels, SharedString, Styled, Task, WeakEntity, Window, point,
 };
-use itertools::Itertools as _;
 use language::{
     Bias, Buffer, BufferRow, CharKind, CharScopeContext, HighlightedText, LocalFile, Point,
     SelectionGoal, proto::serialize_anchor as serialize_text_anchor,
@@ -40,7 +39,7 @@ use std::{
 };
 use text::{BufferId, BufferSnapshot, Selection};
 use ui::{IconDecorationKind, prelude::*};
-use util::{ResultExt, TryFutureExt, paths::PathExt};
+use util::{ResultExt, TryFutureExt, paths::PathExt, rel_path::RelPath};
 use workspace::item::{Dedup, ItemSettings, SerializableItem, TabContentParams};
 use workspace::{
     CollaboratorId, ItemId, ItemNavHistory, ToolbarItemLocation, ViewId, Workspace, WorkspaceId,
@@ -574,7 +573,7 @@ fn deserialize_selection(
 fn deserialize_anchor(anchor: proto::EditorAnchor, buffer: &MultiBufferSnapshot) -> Option<Anchor> {
     let anchor = anchor.anchor?;
     if let Some(buffer_id) = anchor.buffer_id
-        && let Some(buffer_id) = BufferId::new(buffer_id).ok()
+        && BufferId::new(buffer_id).is_ok()
     {
         let text_anchor = language::proto::deserialize_anchor(anchor)?;
         buffer.anchor_in_excerpt(text_anchor)
@@ -582,7 +581,6 @@ fn deserialize_anchor(anchor: proto::EditorAnchor, buffer: &MultiBufferSnapshot)
         match proto::Bias::from_i32(anchor.bias)? {
             proto::Bias::Left => Some(Anchor::Min),
             proto::Bias::Right => Some(Anchor::Max),
-            _ => None,
         }
     }
 }

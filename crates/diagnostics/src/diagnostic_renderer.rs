@@ -10,7 +10,7 @@ use language::{BufferId, Diagnostic, DiagnosticEntryRef, LanguageRegistry};
 use lsp::DiagnosticSeverity;
 use markdown::{Markdown, MarkdownElement};
 use settings::Settings;
-use text::{AnchorRangeExt, Point};
+use text::Point;
 use theme::ThemeSettings;
 use ui::{CopyButton, prelude::*};
 use util::maybe;

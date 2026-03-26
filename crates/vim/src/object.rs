@@ -16,7 +16,6 @@ use language::{BufferSnapshot, CharKind, Point, Selection, TextObject, TreeSitte
 use multi_buffer::MultiBufferRow;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use text::{OffsetRangeExt as _, ToOffset as _};
 use ui::Context;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize, JsonSchema)]

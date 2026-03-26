@@ -1,5 +1,5 @@
 use std::{
-    ops::{Bound, Range, RangeInclusive},
+    ops::{Range, RangeInclusive},
     sync::Arc,
 };
 
@@ -2026,7 +2026,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use project::Project;
     use rand::rngs::StdRng;
-    use rpc::proto::Excerpt;
     use settings::{DiffViewStyle, SettingsStore};
     use ui::{VisualContext as _, div, px};
     use util::rel_path::rel_path;

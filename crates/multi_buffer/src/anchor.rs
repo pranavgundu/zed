@@ -253,17 +253,6 @@ impl ExcerptAnchor {
             snapshot: buffer,
         })
     }
-
-    pub(crate) fn range_in_buffer(
-        path: PathKeyIndex,
-        range: Range<text::Anchor>,
-    ) -> Range<ExcerptAnchor> {
-        Self::in_buffer(path, range.start)..Self::in_buffer(path, range.end)
-    }
-
-    pub(crate) fn diff_base_anchor(&self) -> Option<text::Anchor> {
-        self.diff_base_anchor
-    }
 }
 
 impl ToOffset for ExcerptAnchor {

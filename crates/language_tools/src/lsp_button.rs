@@ -6,7 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use itertools::Itertools;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 use language::language_settings::{EditPredictionProvider, all_language_settings};

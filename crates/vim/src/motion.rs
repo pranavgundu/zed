@@ -12,7 +12,7 @@ use multi_buffer::MultiBufferRow;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{f64, ops::Range};
-use text::OffsetRangeExt as _;
+
 use workspace::searchable::Direction;
 
 use crate::{

@@ -723,7 +723,7 @@ impl std::fmt::Display for FormatMultiBufferAsMarkedText {
             excerpts,
         } = self;
 
-        for (snapshot, range, is_folded) in excerpts.into_iter() {
+        for (_snapshot, range, is_folded) in excerpts.into_iter() {
             write!(f, "[EXCERPT]\n")?;
             if *is_folded {
                 write!(f, "[FOLDED]\n")?;

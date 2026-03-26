@@ -2,8 +2,7 @@
 mod syntax_map_tests;
 
 use crate::{
-    Buffer, Grammar, InjectionConfig, Language, LanguageId, LanguageRegistry, QUERY_CURSORS,
-    with_parser,
+    Grammar, InjectionConfig, Language, LanguageId, LanguageRegistry, QUERY_CURSORS, with_parser,
 };
 use collections::HashMap;
 use futures::FutureExt;
