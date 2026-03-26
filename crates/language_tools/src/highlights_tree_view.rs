@@ -514,8 +514,6 @@ impl HighlightsTreeView {
     }
 
     fn scroll_to_cursor_position(&mut self, cursor: &Anchor, snapshot: &MultiBufferSnapshot) {
-        let cursor_point = cursor.to_point(snapshot);
-
         let best = self
             .display_items
             .iter()
@@ -528,8 +526,8 @@ impl HighlightsTreeView {
                 _ => None,
             })
             .filter(|(_, _, entry)| {
-                entry.buffer_point_range.start <= cursor_point
-                    && cursor_point <= entry.buffer_point_range.end
+                entry.range.start.cmp(&cursor, snapshot).is_le()
+                    && cursor.cmp(&entry.range.end, snapshot).is_lt()
             })
             .min_by_key(|(_, _, entry)| {
                 (

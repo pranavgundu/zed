@@ -96,10 +96,14 @@ impl Editor {
             .filter_map(|item| {
                 let range_start = multi_buffer_snapshot.anchor_in_buffer(item.range.start)?;
                 let range_end = multi_buffer_snapshot.anchor_in_buffer(item.range.end)?;
+                let source_range_for_text_start =
+                    multi_buffer_snapshot.anchor_in_buffer(item.source_range_for_text.start)?;
+                let source_range_for_text_end =
+                    multi_buffer_snapshot.anchor_in_buffer(item.source_range_for_text.end)?;
                 Some(OutlineItem {
                     depth: item.depth,
                     range: range_start..range_end,
-                    source_range_for_text: range_start..range_end,
+                    source_range_for_text: source_range_for_text_start..source_range_for_text_end,
                     text: item.text.clone(),
                     highlight_ranges: item.highlight_ranges.clone(),
                     name_ranges: item.name_ranges.clone(),

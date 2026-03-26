@@ -522,13 +522,12 @@ impl Editor {
                 }
             }
             InlayHintRefreshReason::BuffersRemoved(buffers_removed) => {
-                let snapshot = self.buffer.read(cx).snapshot(cx);
                 let to_remove = self
                     .display_map
                     .read(cx)
                     .current_inlays()
                     .filter_map(|inlay| {
-                        let (anchor, _) = snapshot.anchor_to_buffer_anchor(inlay.position)?;
+                        let anchor = inlay.position.raw_text_anchor()?;
                         if buffers_removed.contains(&anchor.buffer_id) {
                             Some(inlay.id)
                         } else {

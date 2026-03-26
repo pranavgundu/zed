@@ -6333,7 +6333,7 @@ impl MultiBufferSnapshot {
     }
 
     pub fn buffer_for_id(&self, id: BufferId) -> Option<&BufferSnapshot> {
-        self.buffer_for_path(self.path_for_buffer(id)?)
+        self.buffers.get(&id).map(|state| &state.buffer_snapshot)
     }
 
     fn try_path_for_anchor(&self, anchor: ExcerptAnchor) -> Option<PathKey> {
