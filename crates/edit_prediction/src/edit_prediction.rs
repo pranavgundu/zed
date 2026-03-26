@@ -2428,7 +2428,7 @@ impl EditPredictionStore {
                         let snapshot = buffer.snapshot();
                         let has_collaborators = snapshot
                             .selections_in_range(
-                                Anchor::max_max_range_for_buffer(snapshot.remote_id()),
+                                Anchor::min_max_range_for_buffer(snapshot.remote_id()),
                                 false,
                             )
                             .next()
