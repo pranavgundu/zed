@@ -2351,7 +2351,7 @@ impl CollabPanel {
         let (button_id, button_label, button_icon, helper_text) = if is_authenticated {
             (
                 "connect",
-                if is_busy { "Connecting…" } else { "Connect to Collaboration" },
+                if is_busy { "Connecting…" } else { "Connect" },
                 Icon::new(IconName::SignalHigh).color(Color::Muted),
                 "Connect to collaboration servers.",
             )
