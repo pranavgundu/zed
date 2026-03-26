@@ -57,7 +57,6 @@ use text::{
 };
 use theme::SyntaxTheme;
 use unicode_segmentation::UnicodeSegmentation;
-use util::post_inc;
 use ztracing::instrument;
 
 pub use self::path_key::PathKey;
