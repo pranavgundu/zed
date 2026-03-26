@@ -2545,7 +2545,7 @@ async fn test_map_excerpt_ranges(cx: &mut TestAppContext) {
                 );
                 vec![
                     (input_range.start..BufferOffset(input_range.start.0 + 3), ()),
-                    (excerpt_range.context.clone(), ()),
+                    (excerpt_range.context, ()),
                     (
                         BufferOffset(text::ToOffset::to_offset(&Point::new(2, 2), buffer))
                             ..BufferOffset(text::ToOffset::to_offset(&Point::new(2, 7), buffer)),
@@ -2603,7 +2603,7 @@ async fn test_map_excerpt_ranges(cx: &mut TestAppContext) {
                         ..buffer.offset_to_point(excerpt_range.context.end.0),
                     Point::new(7, 0)..Point::new(10, 1),
                 );
-                vec![(input_range.clone(), ())]
+                vec![(input_range, ())]
             },
         ),
         Some(vec![(
@@ -5580,9 +5580,12 @@ fn test_excerpts_containment_functions(cx: &mut App) {
             "Expected exactly one excerpt for offset {offset}",
         );
 
-        let (_, excerpt_containing) = snapshot.excerpt_containing(offset..offset).expect(&format!(
-            "Expected excerpt_containing to find excerpt for offset {offset}"
-        ));
+        let (_, excerpt_containing) =
+            snapshot
+                .excerpt_containing(offset..offset)
+                .unwrap_or_else(|| {
+                    panic!("Expected excerpt_containing to find excerpt for offset {offset}")
+                });
 
         assert_eq!(
             excerpts_for_range[0].range, excerpt_containing,

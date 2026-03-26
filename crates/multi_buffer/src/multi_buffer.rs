@@ -1649,7 +1649,7 @@ impl MultiBuffer {
                     break;
                 }
                 let buffer = excerpt.buffer_snapshot(&snapshot);
-                let start = text::Anchor::max(
+                let start = *text::Anchor::max(
                     &excerpt.range.context.start,
                     &selection
                         .start
@@ -1657,9 +1657,8 @@ impl MultiBuffer {
                         .map(|excerpt_anchor| excerpt_anchor.text_anchor())
                         .unwrap_or(text::Anchor::min_for_buffer(excerpt.buffer_id)),
                     buffer,
-                )
-                .clone();
-                let end = text::Anchor::min(
+                );
+                let end = *text::Anchor::min(
                     &excerpt.range.context.end,
                     &selection
                         .end
@@ -1667,8 +1666,7 @@ impl MultiBuffer {
                         .map(|excerpt_anchor| excerpt_anchor.text_anchor())
                         .unwrap_or(text::Anchor::max_for_buffer(excerpt.buffer_id)),
                     buffer,
-                )
-                .clone();
+                );
                 selections_by_buffer
                     .entry(buffer.remote_id())
                     .or_default()
@@ -5643,7 +5641,6 @@ impl MultiBufferSnapshot {
         })
         .into_iter()
         .flatten()
-        .filter_map(|(range, text_object)| Some((range, text_object)))
     }
 
     pub fn bracket_ranges<T: ToOffset>(
@@ -6533,7 +6530,7 @@ impl MultiBufferSnapshot {
     /// returns the corresponding buffer range.
     ///
     /// Otherwise, returns None.
-    pub fn range_to_buffer_range<MBD: MultiBufferDimension>(
+    pub fn range_to_buffer_range<MBD>(
         &self,
         range: Range<MBD>,
     ) -> Option<(&BufferSnapshot, Range<MBD::TextDimension>)>

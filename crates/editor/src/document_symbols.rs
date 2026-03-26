@@ -98,7 +98,7 @@ impl Editor {
                 let range_end = multi_buffer_snapshot.anchor_in_buffer(item.range.end)?;
                 Some(OutlineItem {
                     depth: item.depth,
-                    range: range_start.clone()..range_end.clone(),
+                    range: range_start..range_end,
                     source_range_for_text: range_start..range_end,
                     text: item.text.clone(),
                     highlight_ranges: item.highlight_ranges.clone(),

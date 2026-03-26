@@ -367,7 +367,7 @@ impl MultiBuffer {
         index
     }
 
-    pub fn update_path_excerpts<'a>(
+    pub fn update_path_excerpts(
         &mut self,
         path_key: PathKey,
         buffer: Entity<Buffer>,
