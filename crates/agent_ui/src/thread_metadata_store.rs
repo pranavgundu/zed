@@ -4,7 +4,7 @@ use agent::{ThreadStore, ZED_AGENT_ID};
 use agent_client_protocol as acp;
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
-use collections::HashMap;
+use collections::{HashMap, HashSet};
 use db::{
     sqlez::{
         bindable::Column, domain::Domain, statement::Statement,
@@ -45,16 +45,14 @@ fn migrate_thread_metadata(cx: &mut App) {
     let db = store.read(cx).db.clone();
 
     cx.spawn(async move |cx| {
-        if !db.is_empty()? {
-            return Ok::<(), anyhow::Error>(());
-        }
+        let existing_entries = db.list_ids()?.into_iter().collect::<HashSet<_>>();
 
-        let metadata = store.read_with(cx, |_store, app| {
-            ThreadStore::global(app)
-                .read(app)
+        let to_migrate = store.read_with(cx, |_store, cx| {
+            ThreadStore::global(cx)
+                .read(cx)
                 .entries()
                 .filter_map(|entry| {
-                    if entry.folder_paths.is_empty() {
+                    if existing_entries.contains(&entry.id.0) || entry.folder_paths.is_empty() {
                         return None;
                     }
 
@@ -71,18 +69,22 @@ fn migrate_thread_metadata(cx: &mut App) {
                 .collect::<Vec<_>>()
         });
 
-        log::info!("Migrating {} thread store entries", metadata.len());
+        if to_migrate.is_empty() {
+            return anyhow::Ok(());
+        }
+
+        log::info!("Migrating {} thread store entries", to_migrate.len());
 
         // Manually save each entry to the database and call reload, otherwise
         // we'll end up triggering lots of reloads after each save
-        for entry in metadata {
+        for entry in to_migrate {
             db.save(entry).await?;
         }
 
         log::info!("Finished migrating thread store entries");
 
         let _ = store.update(cx, |store, cx| store.reload(cx));
-        Ok(())
+        anyhow::Ok(())
     })
     .detach_and_log_err(cx);
 }
@@ -462,9 +464,11 @@ impl Domain for ThreadMetadataDb {
 db::static_connection!(ThreadMetadataDb, []);
 
 impl ThreadMetadataDb {
-    pub fn is_empty(&self) -> anyhow::Result<bool> {
-        self.select::<i64>("SELECT COUNT(*) FROM sidebar_threads")?()
-            .map(|counts| counts.into_iter().next().unwrap_or_default() == 0)
+    pub fn list_ids(&self) -> anyhow::Result<Vec<Arc<str>>> {
+        self.select::<Arc<str>>(
+            "SELECT session_id FROM sidebar_threads \
+             ORDER BY updated_at DESC",
+        )?()
     }
 
     /// List all sidebar thread metadata, ordered by updated_at descending.
@@ -815,7 +819,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_migrate_thread_metadata(cx: &mut TestAppContext) {
+    async fn test_migrate_thread_metadata_migrates_only_missing_threads(cx: &mut TestAppContext) {
         cx.update(|cx| {
             ThreadStore::init_global(cx);
             ThreadMetadataStore::init_global(cx);
@@ -825,8 +829,31 @@ mod tests {
         let project_b_paths = PathList::new(&[Path::new("/project-b")]);
         let now = Utc::now();
 
+        let existing_metadata = ThreadMetadata {
+            session_id: acp::SessionId::new("a-session-0"),
+            agent_id: None,
+            title: "Existing Metadata".into(),
+            updated_at: now - chrono::Duration::seconds(10),
+            created_at: Some(now - chrono::Duration::seconds(10)),
+            folder_paths: project_a_paths.clone(),
+            archived: false,
+        };
+
+        cx.update(|cx| {
+            let store = ThreadMetadataStore::global(cx);
+            store.update(cx, |store, cx| {
+                store.save(existing_metadata, cx);
+            });
+        });
+        cx.run_until_parked();
+
         let threads_to_save = vec![
-            ("a-session-0", "Thread A0", project_a_paths.clone(), now),
+            (
+                "a-session-0",
+                "Thread A0 From Native Store",
+                project_a_paths.clone(),
+                now,
+            ),
             (
                 "a-session-1",
                 "Thread A1",
@@ -874,33 +901,55 @@ mod tests {
             store.read(cx).entries().collect::<Vec<_>>()
         });
 
-        // All threads with a project are migrated; projectless threads are skipped.
         assert_eq!(list.len(), 3);
-        assert!(list.iter().all(|m| !m.folder_paths.is_empty()));
-        assert!(list.iter().all(|m| m.agent_id.is_none()));
+        assert!(list.iter().all(|metadata| metadata.agent_id.is_none()));
 
-        let session_ids: Vec<&str> = list.iter().map(|m| m.session_id.0.as_ref()).collect();
-        assert!(session_ids.contains(&"a-session-0"));
-        assert!(session_ids.contains(&"a-session-1"));
-        assert!(session_ids.contains(&"b-session-0"));
-        assert!(!session_ids.contains(&"projectless"));
+        let existing_metadata = list
+            .iter()
+            .find(|metadata| metadata.session_id.0.as_ref() == "a-session-0")
+            .unwrap();
+        assert_eq!(existing_metadata.title.as_ref(), "Existing Metadata");
+        assert!(!existing_metadata.archived);
+
+        let migrated_session_ids = list
+            .iter()
+            .map(|metadata| metadata.session_id.0.as_ref())
+            .collect::<Vec<_>>();
+        assert!(migrated_session_ids.contains(&"a-session-1"));
+        assert!(migrated_session_ids.contains(&"b-session-0"));
+        assert!(!migrated_session_ids.contains(&"projectless"));
+
+        let migrated_entries = list
+            .iter()
+            .filter(|metadata| metadata.session_id.0.as_ref() != "a-session-0")
+            .collect::<Vec<_>>();
+        assert!(
+            migrated_entries
+                .iter()
+                .all(|metadata| !metadata.folder_paths.is_empty())
+        );
+        assert!(migrated_entries.iter().all(|metadata| metadata.archived));
     }
 
     #[gpui::test]
-    async fn test_migrate_thread_metadata_skips_when_data_exists(cx: &mut TestAppContext) {
+    async fn test_migrate_thread_metadata_noops_when_all_threads_already_exist(
+        cx: &mut TestAppContext,
+    ) {
         cx.update(|cx| {
             ThreadStore::init_global(cx);
             ThreadMetadataStore::init_global(cx);
         });
 
-        // Pre-populate the metadata store with existing data
+        let project_paths = PathList::new(&[Path::new("/project-a")]);
+        let existing_updated_at = Utc::now();
+
         let existing_metadata = ThreadMetadata {
             session_id: acp::SessionId::new("existing-session"),
             agent_id: None,
-            title: "Existing Thread".into(),
-            updated_at: Utc::now(),
-            created_at: Some(Utc::now()),
-            folder_paths: PathList::default(),
+            title: "Existing Metadata".into(),
+            updated_at: existing_updated_at,
+            created_at: Some(existing_updated_at),
+            folder_paths: project_paths.clone(),
             archived: false,
         };
 
@@ -910,17 +959,18 @@ mod tests {
                 store.save(existing_metadata, cx);
             });
         });
-
         cx.run_until_parked();
 
-        // Add an entry to native thread store that should NOT be migrated
         let save_task = cx.update(|cx| {
             let thread_store = ThreadStore::global(cx);
             thread_store.update(cx, |store, cx| {
                 store.save_thread(
-                    acp::SessionId::new("native-session"),
-                    make_db_thread("Native Thread", Utc::now()),
-                    PathList::default(),
+                    acp::SessionId::new("existing-session"),
+                    make_db_thread(
+                        "Updated Native Thread Title",
+                        existing_updated_at + chrono::Duration::seconds(1),
+                    ),
+                    project_paths.clone(),
                     cx,
                 )
             })
@@ -928,22 +978,17 @@ mod tests {
         save_task.await.unwrap();
         cx.run_until_parked();
 
-        // Run migration - should skip because metadata store is not empty
-        cx.update(|cx| {
-            migrate_thread_metadata(cx);
-        });
-
+        cx.update(|cx| migrate_thread_metadata(cx));
         cx.run_until_parked();
 
-        // Verify only the existing metadata is present (migration was skipped)
         let list = cx.update(|cx| {
             let store = ThreadMetadataStore::global(cx);
             store.read(cx).entries().collect::<Vec<_>>()
         });
+
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].session_id.0.as_ref(), "existing-session");
     }
-
     #[gpui::test]
     async fn test_subagent_threads_excluded_from_sidebar_metadata(cx: &mut TestAppContext) {
         cx.update(|cx| {
