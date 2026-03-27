@@ -1030,7 +1030,7 @@ impl DirectoryLister {
     }
 }
 
-pub const CURRENT_QUIRKS: &[&str] = &["new-style-anchors"];
+pub const CURRRENT_PROJECT_FEATURES: &[&str] = &["new-style-anchors"];
 
 #[cfg(feature = "test-support")]
 pub const DEFAULT_COMPLETION_CONTEXT: CompletionContext = CompletionContext {
@@ -1644,7 +1644,10 @@ impl Project {
                 project_id: remote_id,
                 committer_email: committer.email,
                 committer_name: committer.name,
-                quirks: CURRENT_QUIRKS.iter().map(|s| s.to_string()).collect(),
+                features: CURRRENT_PROJECT_FEATURES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
             })
             .await?;
         Self::from_join_project_response(

@@ -174,7 +174,7 @@ message ShareProject {
   reserved 3;
   bool is_ssh_project = 4;
   optional bool windows_paths = 5;
-  repeated string quirks = 6;
+  repeated string features = 6;
 }
 
 message ShareProjectResponse {
@@ -194,7 +194,7 @@ message JoinProject {
   uint64 project_id = 1;
   optional string committer_email = 2;
   optional string committer_name = 3;
-  repeated string quirks = 4;
+  repeated string features = 4;
 }
 
 message JoinProjectResponse {
@@ -206,7 +206,7 @@ message JoinProjectResponse {
   repeated string language_server_capabilities = 8;
   ChannelRole role = 6;
   bool windows_paths = 9;
-  repeated string quirks = 10;
+  repeated string features = 10;
   reserved 7;
 }
 

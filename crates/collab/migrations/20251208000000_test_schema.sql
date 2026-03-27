@@ -333,7 +333,7 @@ CREATE TABLE public.projects (
     host_connection_id integer,
     host_connection_server_id integer,
     windows_paths boolean DEFAULT false,
-    quirks text NOT NULL DEFAULT ''
+    features text NOT NULL DEFAULT ''
 );
 
 CREATE SEQUENCE public.projects_id_seq

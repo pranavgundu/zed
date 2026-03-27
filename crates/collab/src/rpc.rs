@@ -1780,7 +1780,7 @@ async fn share_project(
             &request.worktrees,
             request.is_ssh_project,
             request.windows_paths.unwrap_or(false),
-            &request.quirks,
+            &request.features,
         )
         .await?;
     response.send(proto::ShareProjectResponse {
@@ -1847,10 +1847,11 @@ async fn join_project(
 
     let db = session.db().await;
     let project_model = db.get_project(project_id).await?;
-    let host_quirks: Vec<String> = serde_json::from_str(&project_model.quirks).unwrap_or_default();
-    let guest_quirks: HashSet<_> = request.quirks.iter().collect();
-    let host_quirks_set: HashSet<_> = host_quirks.iter().collect();
-    if guest_quirks != host_quirks_set {
+    let host_features: Vec<String> =
+        serde_json::from_str(&project_model.features).unwrap_or_default();
+    let guest_features: HashSet<_> = request.features.iter().collect();
+    let host_features_set: HashSet<_> = host_features.iter().collect();
+    if guest_features != host_features_set {
         let host_connection_id = project_model.host_connection()?;
         let mut pool = session.connection_pool().await;
         let host_version = pool
@@ -1937,7 +1938,7 @@ async fn join_project(
         language_server_capabilities,
         role: project.role.into(),
         windows_paths: project.path_style == PathStyle::Windows,
-        quirks: project.quirks.clone(),
+        features: project.features.clone(),
     })?;
 
     for (worktree_id, worktree) in mem::take(&mut project.worktrees) {
