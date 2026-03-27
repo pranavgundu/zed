@@ -1,9 +1,30 @@
 use std::process::Output;
 
+use async_trait::async_trait;
 use serde::Deserialize;
 use smol::process::Command;
 
 use crate::devcontainer_api::DevContainerError;
+
+pub(crate) struct DefaultCommandRunner;
+
+impl DefaultCommandRunner {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl CommandRunner for DefaultCommandRunner {
+    async fn run_command(&self, command: &mut Command) -> Result<Output, std::io::Error> {
+        command.output().await
+    }
+}
+
+#[async_trait]
+pub(crate) trait CommandRunner: Send + Sync {
+    async fn run_command(&self, command: &mut Command) -> Result<Output, std::io::Error>;
+}
 
 pub(crate) async fn evaluate_json_command<T>(
     mut command: Command,
@@ -28,7 +49,7 @@ where
 {
     if output.status.success() {
         let raw = String::from_utf8_lossy(&output.stdout);
-        if raw.is_empty() || raw.trim() == "[]" || raw.trim() == "{}"  {
+        if raw.is_empty() || raw.trim() == "[]" || raw.trim() == "{}" {
             return Ok(None);
         }
         let value = serde_json_lenient::from_str(&raw)

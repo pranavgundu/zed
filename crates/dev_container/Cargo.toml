@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 async-tar.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_json_lenient.workspace = true
@@ -39,6 +40,7 @@ settings = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }
 worktree = { workspace = true, features = ["test-support"] }
 util = { workspace = true, features = ["test-support"] }
+env_logger.workspace = true
 
 [lints]
 workspace = true

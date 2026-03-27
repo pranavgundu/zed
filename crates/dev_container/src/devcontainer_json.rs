@@ -1,6 +1,6 @@
-use std::{collections::HashMap, fmt::Display, path::Path};
+use std::{collections::HashMap, fmt::Display, path::Path, sync::Arc};
 
-use crate::devcontainer_api::DevContainerError;
+use crate::{command_json::CommandRunner, devcontainer_api::DevContainerError};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json_lenient::Value;
 use smol::process::Command;
@@ -194,7 +194,7 @@ pub(crate) struct DevContainer {
     forward_ports: Option<Vec<ForwardPort>>,
     ports_attributes: Option<HashMap<String, PortAttributes>>,
     other_ports_attributes: Option<PortAttributes>,
-    container_env: Option<HashMap<String, String>>,
+    pub(crate) container_env: Option<HashMap<String, String>>,
     pub(crate) remote_env: Option<HashMap<String, String>>,
     pub(crate) container_user: Option<String>,
     #[serde(rename = "updateRemoteUserUID")]
@@ -329,16 +329,23 @@ impl LifecyleScript {
             .collect()
     }
 
-    pub async fn run(&self, working_directory: &Path) -> Result<(), DevContainerError> {
+    pub async fn run(
+        &self,
+        command_runnder: &Arc<dyn CommandRunner>,
+        working_directory: &Path,
+    ) -> Result<(), DevContainerError> {
         for (command_name, mut command) in self.script_commands() {
             log::info!("Running script {command_name}");
 
             command.current_dir(working_directory);
 
-            let output = command.output().await.map_err(|e| {
-                log::error!("Error running command {command_name}: {e}");
-                DevContainerError::CommandFailed(command_name.clone())
-            })?;
+            let output = command_runnder
+                .run_command(&mut command)
+                .await
+                .map_err(|e| {
+                    log::error!("Error running command {command_name}: {e}");
+                    DevContainerError::CommandFailed(command_name.clone())
+                })?;
             if !output.status.success() {
                 let std_err = String::from_utf8_lossy(&output.stderr);
                 log::error!(

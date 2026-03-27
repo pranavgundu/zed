@@ -4823,6 +4823,8 @@ name = "dev_container"
 version = "0.1.0"
 dependencies = [
  "async-tar",
+ "async-trait",
+ "env_logger 0.11.8",
  "fs",
  "futures 0.3.31",
  "gpui",

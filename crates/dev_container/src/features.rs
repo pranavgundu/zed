@@ -38,6 +38,7 @@ pub(crate) struct DevContainerFeatureJson {
     pub(crate) mounts: Option<Vec<MountDefinition>>,
     pub(crate) privileged: Option<bool>,
     pub(crate) entrypoint: Option<String>,
+    pub(crate) container_env: Option<HashMap<String, String>>,
 }
 
 /// A single option definition inside `devcontainer-feature.json`.
@@ -71,9 +72,52 @@ impl FeatureManifest {
             feature_json,
         }
     }
+    pub(crate) fn container_env(&self) -> HashMap<String, String> {
+        self.feature_json
+            .container_env
+            .as_ref()
+            .map(|hash_map| hash_map.clone())
+            .unwrap_or_default()
+    }
+
+    // let feature_dir = build_info.features_content_dir.join(&consecutive_id);
+    pub(crate) fn generate_dockerfile_feature_layer(
+        &self,
+        use_buildkit: bool,
+        id: &str,
+        dest: &str,
+    ) -> String {
+        if use_buildkit {
+            format!(
+                r#"
+RUN --mount=type=bind,from=dev_containers_feature_content_source,source=./{id},target=/tmp/build-features-src/{id} \
+cp -ar /tmp/build-features-src/{id} {dest} \
+&& chmod -R 0755 {dest}/{id} \
+&& cd {dest}/{id} \
+&& chmod +x ./devcontainer-features-install.sh \
+&& ./devcontainer-features-install.sh \
+&& rm -rf {dest}/{id}
+"#,
+            )
+        } else {
+            format!("TODO {}", use_buildkit)
+        }
+    }
+
+    pub(crate) fn generate_dockerfile_env(&self) -> String {
+        let mut layer = "".to_string();
+        let env = self.container_env();
+        let mut env: Vec<(&String, &String)> = env.iter().collect();
+        env.sort();
+
+        for (key, value) in env {
+            layer = format!("{layer}ENV {key}={value}\n")
+        }
+        layer
+    }
 
     /// Merges user options from devcontainer.json with default options defined in this feature manifest
-    pub(crate) fn genereate_merged_env(&self, options: &FeatureOptions) -> HashMap<String, String> {
+    pub(crate) fn generate_merged_env(&self, options: &FeatureOptions) -> HashMap<String, String> {
         let mut merged: HashMap<String, String> = self
             .feature_json
             .options
@@ -103,7 +147,7 @@ impl FeatureManifest {
         fs: &Arc<dyn Fs>,
         options: &FeatureOptions,
     ) -> Result<String, DevContainerError> {
-        let merged_env = self.genereate_merged_env(options);
+        let merged_env = self.generate_merged_env(options);
 
         let env_vars: Vec<String> = merged_env
             .iter()

@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol::process::Command;
 
@@ -114,16 +115,11 @@ impl Docker {
         }
     }
 
-    /// This operates as an escape hatch for more custom uses of the docker API. See DevContainerManifest::create_docker_build as an example
-    pub(crate) fn docker_cli(&self) -> String {
-        self.docker_cli.clone()
-    }
-
-    pub(crate) fn is_podman(&self) -> bool {
+    fn is_podman(&self) -> bool {
         self.docker_cli == "podman"
     }
 
-    pub(crate) async fn pull_image(&self, image: &String) -> Result<(), DevContainerError> {
+    async fn pull_image(&self, image: &String) -> Result<(), DevContainerError> {
         let mut command = smol::process::Command::new(&self.docker_cli);
         command.args(&["pull", image]);
 
@@ -140,11 +136,42 @@ impl Docker {
         Ok(())
     }
 
-    pub(crate) async fn inspect(&self, image: &String) -> Result<DockerInspect, DevContainerError> {
-        // Try to pull the image, continue on failure; Image may be local only, or network unavailable
-        self.pull_image(image).await.ok();
+    fn create_docker_query_containers(&self, filters: Vec<String>) -> Command {
+        let mut command = smol::process::Command::new(&self.docker_cli);
+        command.args(&["ps", "-a"]);
 
-        let command = self.create_docker_inspect(image);
+        for filter in filters {
+            command.arg("--filter");
+            command.arg(filter);
+        }
+        command.arg("--format={{ json . }}");
+        command
+    }
+
+    fn create_docker_inspect(&self, id: &str) -> Command {
+        let mut command = smol::process::Command::new(&self.docker_cli);
+        command.args(&["inspect", "--format={{json . }}", id]);
+        command
+    }
+
+    fn create_docker_compose_config_command(&self, config_files: &Vec<PathBuf>) -> Command {
+        let mut command = smol::process::Command::new(&self.docker_cli);
+        command.arg("compose");
+        for file_path in config_files {
+            command.args(&["-f", &file_path.display().to_string()]);
+        }
+        command.args(&["config", "--format", "json"]);
+        command
+    }
+}
+
+#[async_trait]
+impl DockerClient for Docker {
+    async fn inspect(&self, id: &String) -> Result<DockerInspect, DevContainerError> {
+        // Try to pull the image, continue on failure; Image may be local only, id a reference to a running container
+        self.pull_image(id).await.ok();
+
+        let command = self.create_docker_inspect(id);
 
         let Some(docker_inspect): Option<DockerInspect> = evaluate_json_command(command).await?
         else {
@@ -154,7 +181,45 @@ impl Docker {
         Ok(docker_inspect)
     }
 
-    pub(crate) async fn run_docker_exec(
+    async fn get_docker_compose_config(
+        &self,
+        config_files: &Vec<PathBuf>,
+    ) -> Result<Option<DockerComposeConfig>, DevContainerError> {
+        let command = self.create_docker_compose_config_command(config_files);
+        evaluate_json_command(command).await
+    }
+
+    async fn docker_compose_build(
+        &self,
+        config_files: &Vec<PathBuf>,
+        project_name: &str,
+    ) -> Result<(), DevContainerError> {
+        let mut command = Command::new(&self.docker_cli);
+        if !self.is_podman() {
+            command.env("DOCKER_BUILDKIT", "1");
+        }
+        command.args(&["compose", "--project-name", project_name]);
+        for docker_compose_file in config_files {
+            command.args(&["-f", &docker_compose_file.display().to_string()]);
+        }
+        command.arg("build");
+
+        let output = command.output().await.map_err(|e| {
+            log::error!("Error running docker compose up: {e}");
+            DevContainerError::CommandFailed(command.get_program().display().to_string())
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::error!("Non-success status from docker compose up: {}", stderr);
+            return Err(DevContainerError::CommandFailed(
+                command.get_program().display().to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+    async fn run_docker_exec(
         &self,
         container_id: &str,
         remote_folder: &str,
@@ -198,83 +263,7 @@ impl Docker {
 
         Ok(())
     }
-
-    pub(crate) async fn find_process_by_filters(
-        &self,
-        filters: Vec<String>,
-    ) -> Result<Option<DockerPs>, DevContainerError> {
-        let command = self.create_docker_query_containers(filters);
-        evaluate_json_command(command).await
-    }
-
-    fn create_docker_query_containers(&self, filters: Vec<String>) -> Command {
-        let mut command = smol::process::Command::new(&self.docker_cli);
-        command.args(&["ps", "-a"]);
-
-        for filter in filters {
-            command.arg("--filter");
-            command.arg(filter);
-        }
-        command.arg("--format={{ json . }}");
-        command
-    }
-
-    fn create_docker_inspect(&self, id: &str) -> Command {
-        let mut command = smol::process::Command::new(&self.docker_cli);
-        command.args(&["inspect", "--format={{json . }}", id]);
-        command
-    }
-
-    pub(crate) async fn get_docker_compose_config(
-        &self,
-        config_files: &Vec<PathBuf>,
-    ) -> Result<Option<DockerComposeConfig>, DevContainerError> {
-        let command = self.create_docker_compose_config_command(config_files);
-        evaluate_json_command(command).await
-    }
-
-    fn create_docker_compose_config_command(&self, config_files: &Vec<PathBuf>) -> Command {
-        let mut command = smol::process::Command::new(&self.docker_cli);
-        command.arg("compose");
-        for file_path in config_files {
-            command.args(&["-f", &file_path.display().to_string()]);
-        }
-        command.args(&["config", "--format", "json"]);
-        command
-    }
-
-    pub(crate) async fn docker_compose_build(
-        &self,
-        config_files: &Vec<PathBuf>,
-        project_name: &str,
-    ) -> Result<(), DevContainerError> {
-        let mut command = Command::new(&self.docker_cli);
-        if !self.is_podman() {
-            command.env("DOCKER_BUILDKIT", "1");
-        }
-        command.args(&["compose", "--project-name", project_name]);
-        for docker_compose_file in config_files {
-            command.args(&["-f", &docker_compose_file.display().to_string()]);
-        }
-        command.arg("build");
-
-        let output = command.output().await.map_err(|e| {
-            log::error!("Error running docker compose up: {e}");
-            DevContainerError::CommandFailed(command.get_program().display().to_string())
-        })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::error!("Non-success status from docker compose up: {}", stderr);
-            return Err(DevContainerError::CommandFailed(
-                command.get_program().display().to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    pub(crate) async fn start_container(&self, id: &str) -> Result<(), DevContainerError> {
+    async fn start_container(&self, id: &str) -> Result<(), DevContainerError> {
         let mut command = Command::new(&self.docker_cli);
 
         command.args(&["start", id]);
@@ -294,6 +283,53 @@ impl Docker {
 
         Ok(())
     }
+
+    async fn find_process_by_filters(
+        &self,
+        filters: Vec<String>,
+    ) -> Result<Option<DockerPs>, DevContainerError> {
+        let command = self.create_docker_query_containers(filters);
+        evaluate_json_command(command).await
+    }
+
+    fn docker_cli(&self) -> String {
+        self.docker_cli.clone()
+    }
+
+    fn supports_compose_buildkit(&self) -> bool {
+        !self.is_podman()
+    }
+}
+
+#[async_trait]
+pub(crate) trait DockerClient {
+    async fn inspect(&self, id: &String) -> Result<DockerInspect, DevContainerError>;
+    async fn get_docker_compose_config(
+        &self,
+        config_files: &Vec<PathBuf>,
+    ) -> Result<Option<DockerComposeConfig>, DevContainerError>;
+    async fn docker_compose_build(
+        &self,
+        config_files: &Vec<PathBuf>,
+        project_name: &str,
+    ) -> Result<(), DevContainerError>;
+    async fn run_docker_exec(
+        &self,
+        container_id: &str,
+        remote_folder: &str,
+        user: &str,
+        env: &HashMap<String, String>,
+        inner_command: Command,
+    ) -> Result<(), DevContainerError>;
+    async fn start_container(&self, id: &str) -> Result<(), DevContainerError>;
+    async fn find_process_by_filters(
+        &self,
+        filters: Vec<String>,
+    ) -> Result<Option<DockerPs>, DevContainerError>;
+    fn supports_compose_buildkit(&self) -> bool;
+    /// This operates as an escape hatch for more custom uses of the docker API.
+    /// See DevContainerManifest::create_docker_build as an example
+    fn docker_cli(&self) -> String;
 }
 
 fn deserialize_metadata<'de, D>(

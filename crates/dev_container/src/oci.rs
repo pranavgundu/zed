@@ -4,11 +4,11 @@ use fs::Fs;
 use futures::{AsyncRead, AsyncReadExt, io::BufReader};
 use http::Request;
 use http_client::{AsyncBody, HttpClient};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::devcontainer_api::DevContainerError;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TokenResponse {
     pub(crate) token: String,
