@@ -1081,6 +1081,17 @@ impl Sidebar {
         cx.notify();
     }
 
+    fn visible_thread_session_ids(&self) -> HashSet<acp::SessionId> {
+        self.contents
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ListEntry::Thread(thread) => Some(thread.session_info.session_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn select_first_entry(&mut self) {
         self.selection = self
             .contents
@@ -3031,10 +3042,18 @@ impl Sidebar {
             .downgrade();
 
         let agent_connection_store = agent_panel.read(cx).connection_store().downgrade();
+        let visible_sidebar_session_ids = self.visible_thread_session_ids();
 
         let archive_view = cx.new(|cx| {
-            ThreadsArchiveView::new(agent_connection_store, agent_server_store, window, cx)
+            ThreadsArchiveView::new(
+                agent_connection_store.clone(),
+                agent_server_store.clone(),
+                visible_sidebar_session_ids.clone(),
+                window,
+                cx,
+            )
         });
+
         let subscription = cx.subscribe_in(
             &archive_view,
             window,

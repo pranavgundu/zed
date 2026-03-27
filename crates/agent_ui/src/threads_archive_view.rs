@@ -15,6 +15,7 @@ use itertools::Itertools as _;
 use menu::{Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use project::{AgentId, AgentServerStore};
 use settings::Settings as _;
+use std::collections::HashSet;
 use theme::ActiveTheme;
 use ui::ThreadItem;
 use ui::{
@@ -89,6 +90,13 @@ fn fuzzy_match_positions(query: &str, text: &str) -> Option<Vec<usize>> {
     }
 }
 
+fn should_show_archive_thread(
+    thread: &ThreadMetadata,
+    visible_sidebar_session_ids: &HashSet<acp::SessionId>,
+) -> bool {
+    thread.archived || !visible_sidebar_session_ids.contains(&thread.session_id)
+}
+
 pub enum ThreadsArchiveViewEvent {
     Close,
     Unarchive { thread: ThreadMetadata },
@@ -108,12 +116,14 @@ pub struct ThreadsArchiveView {
     _refresh_history_task: Task<()>,
     agent_connection_store: WeakEntity<AgentConnectionStore>,
     agent_server_store: WeakEntity<AgentServerStore>,
+    visible_sidebar_session_ids: HashSet<acp::SessionId>,
 }
 
 impl ThreadsArchiveView {
     pub fn new(
         agent_connection_store: WeakEntity<AgentConnectionStore>,
         agent_server_store: WeakEntity<AgentServerStore>,
+        visible_sidebar_session_ids: HashSet<acp::SessionId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -173,7 +183,9 @@ impl ThreadsArchiveView {
             _refresh_history_task: Task::ready(()),
             agent_connection_store,
             agent_server_store,
+            visible_sidebar_session_ids,
         };
+
         this.update_items(cx);
         this
     }
@@ -194,10 +206,12 @@ impl ThreadsArchiveView {
     fn update_items(&mut self, cx: &mut Context<Self>) {
         let sessions = ThreadMetadataStore::global(cx)
             .read(cx)
-            .archived_entries()
+            .entries()
+            .filter(|thread| should_show_archive_thread(thread, &self.visible_sidebar_session_ids))
             .sorted_by_cached_key(|t| t.created_at.unwrap_or(t.updated_at))
             .rev()
             .collect::<Vec<_>>();
+
         let query = self.filter_editor.read(cx).text(cx).to_lowercase();
         let today = Local::now().naive_local().date();
 
@@ -616,7 +630,7 @@ impl Render for ThreadsArchiveView {
             let message = if has_query {
                 "No threads match your search."
             } else {
-                "No archived threads yet."
+                "No archived or hidden threads yet."
             };
 
             v_flex()
@@ -658,5 +672,48 @@ impl Render for ThreadsArchiveView {
             .size_full()
             .child(self.render_header(window, cx))
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use project::AgentId;
+    use std::{path::PathBuf, sync::Arc};
+    use util::path_list::PathList;
+
+    fn thread_metadata(session_id: &str, archived: bool) -> ThreadMetadata {
+        ThreadMetadata {
+            session_id: acp::SessionId::new(Arc::from(session_id)),
+            agent_id: AgentId::new("zed"),
+            title: SharedString::from(session_id.to_string()),
+            updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
+            created_at: None,
+            folder_paths: PathList::new(&[PathBuf::from("/project")]),
+            archived,
+        }
+    }
+
+    #[test]
+    fn test_should_show_archive_thread_hides_only_visible_non_archived_threads() {
+        let visible_sidebar_session_ids = [
+            acp::SessionId::new(Arc::from("visible-non-archived")),
+            acp::SessionId::new(Arc::from("visible-archived")),
+        ]
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+        assert!(!should_show_archive_thread(
+            &thread_metadata("visible-non-archived", false),
+            &visible_sidebar_session_ids,
+        ));
+        assert!(should_show_archive_thread(
+            &thread_metadata("hidden-non-archived", false),
+            &visible_sidebar_session_ids,
+        ));
+        assert!(should_show_archive_thread(
+            &thread_metadata("visible-archived", true),
+            &visible_sidebar_session_ids,
+        ));
     }
 }
