@@ -300,8 +300,6 @@ impl DevContainerManifest {
             ConfigStatus::VariableParsed(dev_container) => dev_container,
         };
         let root_image_tag = self.get_base_image_from_config().await?;
-        dbg!(&root_image_tag);
-
         let root_image = self.docker_client.inspect(&root_image_tag).await?;
 
         if dev_container.build_type() == DevContainerBuildType::Image
@@ -311,6 +309,8 @@ impl DevContainerManifest {
             return Ok(());
         }
 
+        // --- Phase 1: Create directories and initialize build info ---
+
         let temp_base = std::env::temp_dir().join("devcontainer-zed");
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -318,7 +318,6 @@ impl DevContainerManifest {
             .unwrap_or(0);
 
         let features_content_dir = temp_base.join(format!("container-features-{}", timestamp));
-
         let empty_context_dir = temp_base.join("empty-folder");
 
         self.fs
@@ -335,13 +334,11 @@ impl DevContainerManifest {
         })?;
 
         let dockerfile_path = features_content_dir.join("Dockerfile.extended");
-
         let image_tag =
             self.generate_features_image_tag(dockerfile_path.clone().display().to_string());
 
         let mut build_info = FeaturesBuildInfo {
             dockerfile_path,
-            dockerfile_no_buildkit_path: None,
             features_content_dir,
             empty_context_dir,
             build_image: dev_container.image.clone(),
@@ -373,10 +370,10 @@ impl DevContainerManifest {
                 DevContainerError::FilesystemError
             })?;
 
+        // --- Phase 2: Download features and inflate FeatureManifest structs ---
+
         let ordered_features =
             resolve_feature_order(features, &dev_container.override_feature_install_order);
-
-        let mut feature_layers = String::new();
 
         for (index, (feature_ref, options)) in ordered_features.iter().enumerate() {
             if matches!(options, FeatureOptions::Bool(false)) {
@@ -399,9 +396,6 @@ impl DevContainerManifest {
                 DevContainerError::FilesystemError
             })?;
 
-            // --- Download the feature's OCI tarball first, so we can read
-            // devcontainer-feature.json for option defaults before writing the
-            // env file.
             let oci_ref = parse_oci_feature_ref(feature_ref).ok_or_else(|| {
                 log::error!(
                     "Feature '{}' is not a supported OCI feature reference",
@@ -479,7 +473,7 @@ impl DevContainerManifest {
                     DevContainerError::ResourceFetchFailed
                 })?;
 
-            let feature_manifest = FeatureManifest::new(feature_dir, feature_json);
+            let feature_manifest = FeatureManifest::new(consecutive_id, feature_dir, feature_json);
 
             log::info!("Downloaded OCI feature content for '{}'", feature_ref);
 
@@ -502,14 +496,13 @@ impl DevContainerManifest {
                     DevContainerError::FilesystemError
                 })?;
 
-            feature_layers.push_str(&feature_manifest.generate_dockerfile_feature_layer(
-                true,
-                &consecutive_id,
-                FEATURES_CONTAINER_TEMP_DEST_FOLDER,
-            ));
-
             self.features.push(feature_manifest);
         }
+
+        // --- Phase 3: Generate extended Dockerfile from the inflated manifests ---
+
+        let is_compose = dev_container.build_type() == DevContainerBuildType::DockerCompose;
+        let use_buildkit = self.docker_client.supports_compose_buildkit() || !is_compose;
 
         let dockerfile_base_content = if let Some(location) = &self.dockerfile_location().await {
             self.fs.load(location).await.log_err()
@@ -517,13 +510,23 @@ impl DevContainerManifest {
             None
         };
 
-        let dockerfile_base_content_for_no_bk = dockerfile_base_content.clone();
+        let feature_layers: String = self
+            .features
+            .iter()
+            .map(|manifest| {
+                manifest.generate_dockerfile_feature_layer(
+                    use_buildkit,
+                    FEATURES_CONTAINER_TEMP_DEST_FOLDER,
+                )
+            })
+            .collect();
 
         let dockerfile_content = generate_dockerfile_extended(
             &feature_layers,
             &container_user,
             &remote_user,
             dockerfile_base_content,
+            use_buildkit,
         );
 
         self.fs
@@ -533,43 +536,6 @@ impl DevContainerManifest {
                 log::error!("Failed to write Dockerfile.extended: {e}");
                 DevContainerError::FilesystemError
             })?;
-
-        let is_compose = dev_container.build_type() == DevContainerBuildType::DockerCompose;
-        if !self.docker_client.supports_compose_buildkit() && is_compose {
-            let mut no_buildkit_feature_layers = String::new();
-            let ordered_features_for_no_bk =
-                resolve_feature_order(features, &dev_container.override_feature_install_order);
-            for (index, (feature_ref, options)) in ordered_features_for_no_bk.iter().enumerate() {
-                if matches!(options, FeatureOptions::Bool(false)) {
-                    continue;
-                }
-                let feature_id = extract_feature_id(feature_ref);
-                let consecutive_id = format!("{}_{}", feature_id, index);
-                no_buildkit_feature_layers
-                    .push_str(&generate_feature_layer_no_buildkit(&consecutive_id));
-            }
-
-            let no_buildkit_dockerfile_content = generate_dockerfile_extended_no_buildkit(
-                &no_buildkit_feature_layers,
-                &container_user,
-                &remote_user,
-                dockerfile_base_content_for_no_bk,
-            );
-
-            let no_buildkit_path = build_info
-                .features_content_dir
-                .join("Dockerfile.extended.no-buildkit");
-
-            self.fs
-                .write(&no_buildkit_path, no_buildkit_dockerfile_content.as_bytes())
-                .await
-                .map_err(|e| {
-                    log::error!("Failed to write non-BuildKit Dockerfile: {e}");
-                    DevContainerError::FilesystemError
-                })?;
-
-            build_info.dockerfile_no_buildkit_path = Some(no_buildkit_path);
-        }
 
         log::info!(
             "Features build resources written to {:?}",
@@ -765,14 +731,7 @@ impl DevContainerManifest {
                 self.build_feature_content_image().await?;
             }
 
-            let dockerfile_path = if !supports_buildkit {
-                features_build_info
-                    .dockerfile_no_buildkit_path
-                    .as_ref()
-                    .unwrap_or(&features_build_info.dockerfile_path)
-            } else {
-                &features_build_info.dockerfile_path
-            };
+            let dockerfile_path = &features_build_info.dockerfile_path;
 
             let build_args = if !supports_buildkit {
                 HashMap::from([
@@ -866,14 +825,7 @@ impl DevContainerManifest {
                     self.build_feature_content_image().await?;
                 }
 
-                let dockerfile_path = if !supports_buildkit {
-                    features_build_info
-                        .dockerfile_no_buildkit_path
-                        .as_ref()
-                        .unwrap_or(&features_build_info.dockerfile_path)
-                } else {
-                    &features_build_info.dockerfile_path
-                };
+                let dockerfile_path = &features_build_info.dockerfile_path;
 
                 let build_args = if !supports_buildkit {
                     HashMap::from([
@@ -1856,8 +1808,6 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 pub(crate) struct FeaturesBuildInfo {
     /// Path to the generated Dockerfile.extended
     pub dockerfile_path: PathBuf,
-    /// Path to the generated non-BuildKit Dockerfile (for Podman compose)
-    pub dockerfile_no_buildkit_path: Option<PathBuf>,
     /// Path to the features content directory (used as a BuildKit build context)
     pub features_content_dir: PathBuf,
     /// Path to an empty directory used as the Docker build context
@@ -2109,20 +2059,6 @@ fn generate_install_wrapper(feature_ref: &str, feature_id: &str, env_variables: 
     script
 }
 
-fn generate_feature_layer_no_buildkit(consecutive_id: &str) -> String {
-    let source = format!("/tmp/build-features/{}", consecutive_id);
-    let dest = format!("{}/{}", FEATURES_CONTAINER_TEMP_DEST_FOLDER, consecutive_id);
-    format!(
-        r#"
-COPY --chown=root:root --from=dev_containers_feature_content_source {source} {dest}
-RUN chmod -R 0755 {dest} \
-&& cd {dest} \
-&& chmod +x ./devcontainer-features-install.sh \
-&& ./devcontainer-features-install.sh
-"#
-    )
-}
-
 // Dockerfile actions need to be moved to their own file
 fn dockerfile_alias(dockerfile_content: &str) -> Option<String> {
     dockerfile_content
@@ -2168,8 +2104,8 @@ fn generate_dockerfile_extended(
     feature_layers: &str,
     container_user: &str,
     remote_user: &str,
-    // TODO also looks like this needs a test
     dockerfile_content: Option<String>,
+    use_buildkit: bool,
 ) -> String {
     let container_home_cmd = get_ent_passwd_shell_command(container_user);
     let remote_home_cmd = get_ent_passwd_shell_command(remote_user);
@@ -2184,69 +2120,29 @@ fn generate_dockerfile_extended(
         })
         .unwrap_or("".to_string());
 
-    dbg!(&dockerfile_content);
-
     let dest = FEATURES_CONTAINER_TEMP_DEST_FOLDER;
+
+    let feature_content_source_stage = if use_buildkit {
+        "".to_string()
+    } else {
+        "\nFROM dev_container_feature_content_temp as dev_containers_feature_content_source\n"
+            .to_string()
+    };
+
+    let builtin_env_source_path = if use_buildkit {
+        "./devcontainer-features.builtin.env"
+    } else {
+        "/tmp/build-features/devcontainer-features.builtin.env"
+    };
 
     format!(
         r#"ARG _DEV_CONTAINERS_BASE_IMAGE=placeholder
 
 {dockerfile_content}
-
+{feature_content_source_stage}
 FROM $_DEV_CONTAINERS_BASE_IMAGE AS dev_containers_feature_content_normalize
 USER root
-COPY --from=dev_containers_feature_content_source ./devcontainer-features.builtin.env /tmp/build-features/
-RUN chmod -R 0755 /tmp/build-features/
-
-FROM $_DEV_CONTAINERS_BASE_IMAGE AS dev_containers_target_stage
-
-USER root
-
-RUN mkdir -p {dest}
-COPY --from=dev_containers_feature_content_normalize /tmp/build-features/ {dest}
-
-RUN \
-echo "_CONTAINER_USER_HOME=$({container_home_cmd} | cut -d: -f6)" >> {dest}/devcontainer-features.builtin.env && \
-echo "_REMOTE_USER_HOME=$({remote_home_cmd} | cut -d: -f6)" >> {dest}/devcontainer-features.builtin.env
-
-{feature_layers}
-
-ARG _DEV_CONTAINERS_IMAGE_USER=root
-USER $_DEV_CONTAINERS_IMAGE_USER
-"#
-    )
-}
-
-fn generate_dockerfile_extended_no_buildkit(
-    feature_layers: &str,
-    container_user: &str,
-    remote_user: &str,
-    dockerfile_content: Option<String>,
-) -> String {
-    let container_home_cmd = get_ent_passwd_shell_command(container_user);
-    let remote_home_cmd = get_ent_passwd_shell_command(remote_user);
-    let dockerfile_content = dockerfile_content
-        .map(|content| {
-            if dockerfile_alias(&content).is_some() {
-                content
-            } else {
-                dockerfile_inject_alias(&content, "dev_container_auto_added_stage_label")
-            }
-        })
-        .unwrap_or("".to_string());
-
-    let dest = FEATURES_CONTAINER_TEMP_DEST_FOLDER;
-
-    format!(
-        r#"ARG _DEV_CONTAINERS_BASE_IMAGE=placeholder
-
-{dockerfile_content}
-
-FROM dev_container_feature_content_temp as dev_containers_feature_content_source
-
-FROM $_DEV_CONTAINERS_BASE_IMAGE AS dev_containers_feature_content_normalize
-USER root
-COPY --from=dev_containers_feature_content_source /tmp/build-features/devcontainer-features.builtin.env /tmp/build-features/
+COPY --from=dev_containers_feature_content_source {builtin_env_source_path} /tmp/build-features/
 RUN chmod -R 0755 /tmp/build-features/
 
 FROM $_DEV_CONTAINERS_BASE_IMAGE AS dev_containers_target_stage
@@ -4292,9 +4188,8 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         let feature_dockerfile = files
             .iter()
             .find(|f| {
-                f.file_name().is_some_and(|s| {
-                    s.display().to_string() == "Dockerfile.extended.no-buildkit".to_string()
-                })
+                f.file_name()
+                    .is_some_and(|s| s.display().to_string() == "Dockerfile.extended".to_string())
             })
             .expect("to be found");
         let feature_dockerfile = test_dependencies.fs.load(feature_dockerfile).await.unwrap();

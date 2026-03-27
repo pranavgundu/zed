@@ -61,13 +61,19 @@ impl FeatureOptionDefinition {
 
 #[derive(Debug, Eq, PartialEq, Default)]
 pub(crate) struct FeatureManifest {
+    consecutive_id: String,
     file_path: PathBuf,
     feature_json: DevContainerFeatureJson,
 }
 
 impl FeatureManifest {
-    pub(crate) fn new(file_path: PathBuf, feature_json: DevContainerFeatureJson) -> Self {
+    pub(crate) fn new(
+        consecutive_id: String,
+        file_path: PathBuf,
+        feature_json: DevContainerFeatureJson,
+    ) -> Self {
         Self {
+            consecutive_id,
             file_path,
             feature_json,
         }
@@ -80,13 +86,12 @@ impl FeatureManifest {
             .unwrap_or_default()
     }
 
-    // let feature_dir = build_info.features_content_dir.join(&consecutive_id);
     pub(crate) fn generate_dockerfile_feature_layer(
         &self,
         use_buildkit: bool,
-        id: &str,
         dest: &str,
     ) -> String {
+        let id = &self.consecutive_id;
         if use_buildkit {
             format!(
                 r#"
@@ -100,7 +105,17 @@ cp -ar /tmp/build-features-src/{id} {dest} \
 "#,
             )
         } else {
-            format!("TODO {}", use_buildkit)
+            let source = format!("/tmp/build-features/{id}");
+            let full_dest = format!("{dest}/{id}");
+            format!(
+                r#"
+COPY --chown=root:root --from=dev_containers_feature_content_source {source} {full_dest}
+RUN chmod -R 0755 {full_dest} \
+&& cd {full_dest} \
+&& chmod +x ./devcontainer-features-install.sh \
+&& ./devcontainer-features-install.sh
+"#
+            )
         }
     }
 
