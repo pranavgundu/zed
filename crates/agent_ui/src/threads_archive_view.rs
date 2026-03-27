@@ -423,7 +423,6 @@ impl ThreadsArchiveView {
                     })
                     .timestamp(timestamp)
                     .highlight_positions(highlight_positions.clone())
-                    // Fixme: Use a separate slot for project names
                     .project_paths(thread.folder_paths.paths_owned())
                     .focused(is_focused)
                     .hovered(is_hovered)
