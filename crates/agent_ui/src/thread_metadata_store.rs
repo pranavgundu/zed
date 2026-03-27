@@ -23,7 +23,7 @@ use workspace::PathList;
 use crate::DEFAULT_THREAD_TITLE;
 
 pub fn init(cx: &mut App) {
-    SidebarThreadMetadataStore::init_global(cx);
+    ThreadMetadataStore::init_global(cx);
 
     if cx.has_flag::<AgentV2FeatureFlag>() {
         migrate_thread_metadata(cx);
@@ -41,7 +41,7 @@ pub fn init(cx: &mut App) {
 ///
 /// TODO: Remove this after N weeks of shipping the sidebar
 fn migrate_thread_metadata(cx: &mut App) {
-    let store = SidebarThreadMetadataStore::global(cx);
+    let store = ThreadMetadataStore::global(cx);
     let db = store.read(cx).db.clone();
 
     cx.spawn(async move |cx| {
@@ -87,7 +87,7 @@ fn migrate_thread_metadata(cx: &mut App) {
     .detach_and_log_err(cx);
 }
 
-struct GlobalThreadMetadataStore(Entity<SidebarThreadMetadataStore>);
+struct GlobalThreadMetadataStore(Entity<ThreadMetadataStore>);
 impl Global for GlobalThreadMetadataStore {}
 
 /// Lightweight metadata for any thread (native or ACP), enough to populate
@@ -146,11 +146,10 @@ impl ThreadMetadata {
     }
 }
 
-/// The store holds all metadata needed to show threads in the sidebar.
-/// Effectively, all threads stored in here are "non-archived".
+/// The store holds all metadata needed to show threads in the sidebar/the archive.
 ///
 /// Automatically listens to AcpThread events and updates metadata if it has changed.
-pub struct SidebarThreadMetadataStore {
+pub struct ThreadMetadataStore {
     db: ThreadMetadataDb,
     threads: HashMap<acp::SessionId, ThreadMetadata>,
     threads_by_paths: HashMap<PathList, Vec<ThreadMetadata>>,
@@ -175,7 +174,7 @@ impl DbOperation {
     }
 }
 
-impl SidebarThreadMetadataStore {
+impl ThreadMetadataStore {
     #[cfg(not(any(test, feature = "test-support")))]
     pub fn init_global(cx: &mut App) {
         if cx.has_global::<Self>() {
@@ -432,7 +431,7 @@ impl SidebarThreadMetadataStore {
     }
 }
 
-impl Global for SidebarThreadMetadataStore {}
+impl Global for ThreadMetadataStore {}
 
 struct ThreadMetadataDb(ThreadSafeConnection);
 
@@ -654,13 +653,13 @@ mod tests {
             let settings_store = settings::SettingsStore::test(cx);
             cx.set_global(settings_store);
             cx.update_flags(true, vec!["agent-v2".to_string()]);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
         });
 
         cx.run_until_parked();
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             let store = store.read(cx);
 
             let entry_ids = store
@@ -691,7 +690,7 @@ mod tests {
             let settings_store = settings::SettingsStore::test(cx);
             cx.set_global(settings_store);
             cx.update_flags(true, vec!["agent-v2".to_string()]);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
         });
 
         let first_paths = PathList::new(&[Path::new("/project-a")]);
@@ -714,7 +713,7 @@ mod tests {
         );
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             store.update(cx, |store, cx| {
                 store.save(initial_metadata, cx);
                 store.save(second_metadata, cx);
@@ -724,7 +723,7 @@ mod tests {
         cx.run_until_parked();
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             let store = store.read(cx);
 
             let first_path_entries = store
@@ -748,7 +747,7 @@ mod tests {
         );
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             store.update(cx, |store, cx| {
                 store.save(moved_metadata, cx);
             });
@@ -757,7 +756,7 @@ mod tests {
         cx.run_until_parked();
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             let store = store.read(cx);
 
             let entry_ids = store
@@ -784,7 +783,7 @@ mod tests {
         });
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             store.update(cx, |store, cx| {
                 store.delete(acp::SessionId::new("session-2"), cx);
             });
@@ -793,7 +792,7 @@ mod tests {
         cx.run_until_parked();
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             let store = store.read(cx);
 
             let entry_ids = store
@@ -814,7 +813,7 @@ mod tests {
     async fn test_migrate_thread_metadata(cx: &mut TestAppContext) {
         cx.update(|cx| {
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
         });
 
         let project_a_paths = PathList::new(&[Path::new("/project-a")]);
@@ -866,7 +865,7 @@ mod tests {
         cx.run_until_parked();
 
         let list = cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             store.read(cx).entries().collect::<Vec<_>>()
         });
 
@@ -886,7 +885,7 @@ mod tests {
     async fn test_migrate_thread_metadata_skips_when_data_exists(cx: &mut TestAppContext) {
         cx.update(|cx| {
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
         });
 
         // Pre-populate the metadata store with existing data
@@ -901,7 +900,7 @@ mod tests {
         };
 
         cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             store.update(cx, |store, cx| {
                 store.save(existing_metadata, cx);
             });
@@ -933,7 +932,7 @@ mod tests {
 
         // Verify only the existing metadata is present (migration was skipped)
         let list = cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             store.read(cx).entries().collect::<Vec<_>>()
         });
         assert_eq!(list.len(), 1);
@@ -947,7 +946,7 @@ mod tests {
             cx.set_global(settings_store);
             cx.update_flags(true, vec!["agent-v2".to_string()]);
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
         });
 
         let fs = FakeFs::new(cx.executor());
@@ -1005,7 +1004,7 @@ mod tests {
 
         // List all metadata from the store cache.
         let list = cx.update(|cx| {
-            let store = SidebarThreadMetadataStore::global(cx);
+            let store = ThreadMetadataStore::global(cx);
             store.read(cx).entries().collect::<Vec<_>>()
         });
 
@@ -1036,7 +1035,7 @@ mod tests {
             DbOperation::Delete(acp::SessionId::new("session-1")),
         ];
 
-        let deduped = SidebarThreadMetadataStore::dedup_db_operations(operations);
+        let deduped = ThreadMetadataStore::dedup_db_operations(operations);
 
         assert_eq!(deduped.len(), 1);
         assert_eq!(
@@ -1053,7 +1052,7 @@ mod tests {
         let old_metadata = make_metadata("session-1", "Old Title", now, PathList::default());
         let new_metadata = make_metadata("session-1", "New Title", later, PathList::default());
 
-        let deduped = SidebarThreadMetadataStore::dedup_db_operations(vec![
+        let deduped = ThreadMetadataStore::dedup_db_operations(vec![
             DbOperation::Insert(old_metadata),
             DbOperation::Insert(new_metadata.clone()),
         ]);
@@ -1068,7 +1067,7 @@ mod tests {
 
         let metadata1 = make_metadata("session-1", "First Thread", now, PathList::default());
         let metadata2 = make_metadata("session-2", "Second Thread", now, PathList::default());
-        let deduped = SidebarThreadMetadataStore::dedup_db_operations(vec![
+        let deduped = ThreadMetadataStore::dedup_db_operations(vec![
             DbOperation::Insert(metadata1.clone()),
             DbOperation::Insert(metadata2.clone()),
         ]);

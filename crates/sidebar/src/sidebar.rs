@@ -2,7 +2,7 @@ use acp_thread::ThreadStatus;
 use action_log::DiffStats;
 use agent_client_protocol::{self as acp};
 use agent_settings::AgentSettings;
-use agent_ui::thread_metadata_store::SidebarThreadMetadataStore;
+use agent_ui::thread_metadata_store::ThreadMetadataStore;
 use agent_ui::threads_archive_view::{
     ThreadsArchiveView, ThreadsArchiveViewEvent, format_history_entry_timestamp,
 };
@@ -307,7 +307,7 @@ impl Sidebar {
         .detach();
 
         cx.observe(
-            &SidebarThreadMetadataStore::global(cx),
+            &ThreadMetadataStore::global(cx),
             |this, _store, cx| {
                 this.update_entries(cx);
             },
@@ -728,7 +728,7 @@ impl Sidebar {
                 let mut seen_session_ids: HashSet<acp::SessionId> = HashSet::new();
 
                 // Read threads from the store cache for this workspace's path list.
-                let thread_store = SidebarThreadMetadataStore::global(cx);
+                let thread_store = ThreadMetadataStore::global(cx);
                 let workspace_rows: Vec<_> =
                     thread_store.read(cx).entries_for_path(&path_list).collect();
                 for row in workspace_rows {
@@ -2149,7 +2149,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        SidebarThreadMetadataStore::global(cx).update(cx, |store, cx| {
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
             store.unarchive(&session_info.session_id, cx)
         });
 
@@ -2426,7 +2426,7 @@ impl Sidebar {
             }
         }
 
-        SidebarThreadMetadataStore::global(cx)
+        ThreadMetadataStore::global(cx)
             .update(cx, |store, cx| store.archive(session_id, cx));
     }
 
@@ -3295,7 +3295,7 @@ mod tests {
             editor::init(cx);
             cx.update_flags(false, vec!["agent-v2".into()]);
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
             language_model::LanguageModelRegistry::test(cx);
             prompt_store::init(cx);
         });
@@ -3400,7 +3400,7 @@ mod tests {
             archived: false,
         };
         cx.update(|cx| {
-            SidebarThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(metadata, cx))
+            ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save(metadata, cx))
         });
         cx.run_until_parked();
     }
@@ -4358,7 +4358,7 @@ mod tests {
         cx.update(|cx| {
             cx.update_flags(false, vec!["agent-v2".into()]);
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
             language_model::LanguageModelRegistry::test(cx);
             prompt_store::init(cx);
         });
@@ -5531,7 +5531,7 @@ mod tests {
         cx.update(|cx| {
             cx.update_flags(false, vec!["agent-v2".into()]);
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
             language_model::LanguageModelRegistry::test(cx);
             prompt_store::init(cx);
         });
@@ -5900,7 +5900,7 @@ mod tests {
         cx.update(|cx| {
             cx.update_flags(false, vec!["agent-v2".into()]);
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
             language_model::LanguageModelRegistry::test(cx);
             prompt_store::init(cx);
         });
@@ -6014,7 +6014,7 @@ mod tests {
         cx.update(|cx| {
             cx.update_flags(false, vec!["agent-v2".into()]);
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
             language_model::LanguageModelRegistry::test(cx);
             prompt_store::init(cx);
         });
@@ -6974,7 +6974,7 @@ mod tests {
         cx.update(|cx| {
             cx.update_flags(false, vec!["agent-v2".into()]);
             ThreadStore::init_global(cx);
-            SidebarThreadMetadataStore::init_global(cx);
+            ThreadMetadataStore::init_global(cx);
             language_model::LanguageModelRegistry::test(cx);
             prompt_store::init(cx);
         });

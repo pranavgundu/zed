@@ -1,4 +1,4 @@
-use crate::thread_metadata_store::{SidebarThreadMetadataStore, ThreadMetadata};
+use crate::thread_metadata_store::{ThreadMetadata, ThreadMetadataStore};
 use agent_settings::AgentSettings;
 use chrono::{DateTime, Datelike as _, Local, NaiveDate, TimeDelta, Utc};
 use editor::Editor;
@@ -139,7 +139,7 @@ impl ThreadsArchiveView {
         .detach();
 
         let thread_metadata_store_subscription = cx.observe(
-            &SidebarThreadMetadataStore::global(cx),
+            &ThreadMetadataStore::global(cx),
             |this: &mut Self, _, cx| {
                 this.update_items(cx);
             },
@@ -184,7 +184,7 @@ impl ThreadsArchiveView {
     }
 
     fn update_items(&mut self, cx: &mut Context<Self>) {
-        let sessions = SidebarThreadMetadataStore::global(cx)
+        let sessions = ThreadMetadataStore::global(cx)
             .read(cx)
             .archived_entries()
             .sorted_by_cached_key(|t| t.created_at.unwrap_or(t.updated_at))
