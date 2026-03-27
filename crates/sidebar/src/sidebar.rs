@@ -240,21 +240,6 @@ fn workspace_path_list(workspace: &Entity<Workspace>, cx: &App) -> PathList {
     PathList::new(&workspace.read(cx).root_paths(cx))
 }
 
-fn workspace_label_from_path_list(path_list: &PathList) -> SharedString {
-    let mut names = Vec::with_capacity(path_list.paths().len());
-    for abs_path in path_list.paths() {
-        if let Some(name) = abs_path.file_name() {
-            names.push(name.to_string_lossy().to_string());
-        }
-    }
-    if names.is_empty() {
-        // TODO: Can we do something better in this case?
-        "Empty Workspace".into()
-    } else {
-        names.join(", ").into()
-    }
-}
-
 fn load_collapsed_groups(kvp: &KeyValueStore) -> HashSet<PathList> {
     kvp.scoped(SIDEBAR_COLLAPSED_GROUPS_NAMESPACE)
         .read(SIDEBAR_COLLAPSED_GROUPS_KEY)
