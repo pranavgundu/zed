@@ -619,7 +619,7 @@ impl ThreadsArchiveView {
                     )
                 } else {
                     this.child(
-                        IconButton::new("import-thread", IconName::Close)
+                        IconButton::new("import-thread", IconName::Plus)
                             .icon_size(IconSize::Small)
                             .tooltip(Tooltip::text("Import ACP Threads"))
                             .on_click(cx.listener(|this, _, window, cx| {
