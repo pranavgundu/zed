@@ -2216,15 +2216,33 @@ impl Workspace {
             .unwrap_or_default();
         let position = dock.position();
 
+        let use_flexible = size_state
+            .flexible
+            .unwrap_or_else(|| panel.supports_flexible_size(window, cx));
+
         if position.axis() == Axis::Horizontal
-            && panel.supports_flexible_size(window, cx)
+            && use_flexible
             && let Some(ratio) = size_state
                 .flexible_size_ratio
                 .or_else(|| self.default_flexible_dock_ratio(position))
-            && let Some(available_width) =
-                self.available_width_for_horizontal_dock(position, window, cx)
         {
-            return Some((available_width * ratio.clamp(0.0, 1.0)).max(RESIZE_HANDLE_SIZE));
+            let workspace_width = self.bounds.size.width;
+            if workspace_width <= Pixels::ZERO {
+                return None;
+            }
+            let ratio = ratio.clamp(0.001, 0.999);
+            let grow = ratio / (1.0 - ratio);
+            let opposite_grow = self.opposite_dock_flex_grow(position, window, cx);
+            if opposite_grow > 0.0 {
+                // Both docks are flex items sharing the full workspace width.
+                let total_grow = grow + 1.0 + opposite_grow;
+                return Some((grow / total_grow * workspace_width).max(RESIZE_HANDLE_SIZE));
+            } else {
+                // Opposite dock is fixed-width; flex items share (W - fixed).
+                let opposite_fixed = self.opposite_dock_fixed_width(position, window, cx);
+                let available = (workspace_width - opposite_fixed).max(RESIZE_HANDLE_SIZE);
+                return Some((grow / (grow + 1.0) * available).max(RESIZE_HANDLE_SIZE));
+            }
         }
 
         Some(
@@ -2245,35 +2263,83 @@ impl Workspace {
             return None;
         }
 
-        let available_width = self.available_width_for_horizontal_dock(position, window, cx)?;
-        let available_width = available_width.max(RESIZE_HANDLE_SIZE);
-        Some((size / available_width).clamp(0.0, 1.0))
-    }
-
-    fn available_width_for_horizontal_dock(
-        &self,
-        position: DockPosition,
-        window: &Window,
-        cx: &App,
-    ) -> Option<Pixels> {
         let workspace_width = self.bounds.size.width;
         if workspace_width <= Pixels::ZERO {
             return None;
         }
 
+        let opposite_grow = self.opposite_dock_flex_grow(position, window, cx);
+        if opposite_grow > 0.0 {
+            // Both docks are flex items. The layout has three flex participants:
+            // this dock (grow=G), center (grow=1), opposite dock (grow=Gr).
+            //   G / (G + 1 + Gr) * W = desired_size
+            //   G = desired_size * (1 + Gr) / (W - desired_size)
+            //   ratio = G / (1 + G)
+            let clamped = size.clamp(px(0.), workspace_width - px(1.));
+            let grow = clamped * (1.0 + opposite_grow) / (workspace_width - clamped);
+            let ratio = grow / (1.0 + grow);
+            Some(ratio.clamp(0.0, 1.0))
+        } else {
+            // Opposite dock is fixed-width or closed. Two flex participants:
+            // this dock and center share (W - opposite_fixed_width).
+            let opposite_width = self.opposite_dock_fixed_width(position, window, cx);
+            let available = (workspace_width - opposite_width).max(RESIZE_HANDLE_SIZE);
+            Some((size / available).clamp(0.0, 1.0))
+        }
+    }
+
+    /// Returns the flex-grow value of the opposite dock if it is currently
+    /// using flexible (flex) sizing, or 0.0 otherwise.
+    fn opposite_dock_flex_grow(&self, position: DockPosition, window: &Window, cx: &App) -> f32 {
         let opposite_position = match position {
             DockPosition::Left => DockPosition::Right,
             DockPosition::Right => DockPosition::Left,
-            DockPosition::Bottom => return None,
+            DockPosition::Bottom => return 0.0,
         };
 
-        let opposite_width = self
-            .dock_at_position(opposite_position)
+        let opposite_dock = self.dock_at_position(opposite_position).read(cx);
+        let Some(panel) = opposite_dock.visible_panel() else {
+            return 0.0;
+        };
+        let size_state = opposite_dock.stored_panel_size_state(panel.as_ref());
+
+        let is_flexible = size_state
+            .and_then(|s| s.flexible)
+            .unwrap_or_else(|| panel.supports_flexible_size(window, cx));
+        if !is_flexible {
+            return 0.0;
+        }
+
+        let ratio = size_state
+            .and_then(|s| s.flexible_size_ratio)
+            .or_else(|| self.default_flexible_dock_ratio(opposite_position));
+        match ratio {
+            Some(r) => {
+                let r = r.clamp(0.001, 0.999);
+                r / (1.0 - r)
+            }
+            None => 0.0,
+        }
+    }
+
+    /// Returns the fixed pixel width of the opposite dock, or zero if it
+    /// is closed.
+    fn opposite_dock_fixed_width(
+        &self,
+        position: DockPosition,
+        window: &Window,
+        cx: &App,
+    ) -> Pixels {
+        let opposite_position = match position {
+            DockPosition::Left => DockPosition::Right,
+            DockPosition::Right => DockPosition::Left,
+            DockPosition::Bottom => return Pixels::ZERO,
+        };
+
+        self.dock_at_position(opposite_position)
             .read(cx)
             .stored_active_panel_size(window, cx)
-            .unwrap_or(Pixels::ZERO);
-
-        Some((workspace_width - opposite_width).max(RESIZE_HANDLE_SIZE))
+            .unwrap_or(Pixels::ZERO)
     }
 
     pub fn default_flexible_dock_ratio(&self, position: DockPosition) -> Option<f32> {
@@ -2310,6 +2376,7 @@ impl Workspace {
                         let state = dock::PanelSizeState {
                             size: Some(size),
                             flexible_size_ratio: None,
+                            flexible: None,
                         };
                         self.persist_panel_size_state(T::panel_key(), state, cx);
                         state
@@ -7285,11 +7352,17 @@ impl Workspace {
         if let Some(panel) = dock.visible_panel() {
             let size_state = dock.stored_panel_size_state(panel.as_ref());
             if position.axis() == Axis::Horizontal {
-                if let Some(ratio) = size_state
-                    .and_then(|state| state.flexible_size_ratio)
-                    .or_else(|| self.default_flexible_dock_ratio(position))
-                    && panel.supports_flexible_size(window, cx)
-                {
+                let use_flexible = size_state
+                    .and_then(|state| state.flexible)
+                    .unwrap_or_else(|| panel.supports_flexible_size(window, cx));
+                let ratio = if use_flexible {
+                    size_state
+                        .and_then(|state| state.flexible_size_ratio)
+                        .or_else(|| self.default_flexible_dock_ratio(position))
+                } else {
+                    None
+                };
+                if let Some(ratio) = ratio {
                     let ratio = ratio.clamp(0.001, 0.999);
                     let grow = ratio / (1.0 - ratio);
                     let style = container.style();

@@ -1574,6 +1574,10 @@ impl Panel for TerminalPanel {
         }
     }
 
+    fn supports_flexible_size(&self, _window: &Window, _cx: &App) -> bool {
+        true
+    }
+
     fn is_zoomed(&self, _window: &Window, cx: &App) -> bool {
         self.active_pane.read(cx).is_zoomed()
     }
