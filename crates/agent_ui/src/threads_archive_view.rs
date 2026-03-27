@@ -459,34 +459,34 @@ impl ThreadsArchiveView {
                                         }),
                                 )
                             })
-                            .map(|this| {
-                                let agent = thread.agent_id.clone();
-                                let session_id = thread.session_id.clone();
-                                this.child(
-                                    IconButton::new("delete-thread", IconName::Trash)
-                                        .style(ButtonStyle::Filled)
-                                        .icon_size(IconSize::Small)
-                                        .icon_color(Color::Muted)
-                                        .tooltip({
-                                            move |_window, cx| {
-                                                Tooltip::for_action_in(
-                                                    "Delete Thread",
-                                                    &RemoveSelectedThread,
-                                                    &focus_handle,
-                                                    cx,
-                                                )
-                                            }
-                                        })
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                            .child(
+                                IconButton::new("delete-thread", IconName::Trash)
+                                    .style(ButtonStyle::Filled)
+                                    .icon_size(IconSize::Small)
+                                    .icon_color(Color::Muted)
+                                    .tooltip({
+                                        move |_window, cx| {
+                                            Tooltip::for_action_in(
+                                                "Delete Thread",
+                                                &RemoveSelectedThread,
+                                                &focus_handle,
+                                                cx,
+                                            )
+                                        }
+                                    })
+                                    .on_click({
+                                        let agent = thread.agent_id.clone();
+                                        let session_id = thread.session_id.clone();
+                                        cx.listener(move |this, _, _, cx| {
                                             this.delete_thread(
                                                 session_id.clone(),
                                                 agent.clone(),
                                                 cx,
                                             );
                                             cx.stop_propagation();
-                                        })),
-                                )
-                            }),
+                                        })
+                                    }),
+                            ),
                     )
                     .into_any_element()
             }
