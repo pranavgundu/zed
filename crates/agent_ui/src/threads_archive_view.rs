@@ -414,8 +414,6 @@ impl ThreadsArchiveView {
                     IconName::Sparkle
                 };
 
-                let supports_delete = true; //fixme
-
                 ThreadItem::new(id, thread.title.clone())
                     .icon(icon)
                     .when_some(icon_from_external_svg, |this, svg| {
@@ -461,7 +459,7 @@ impl ThreadsArchiveView {
                                         }),
                                 )
                             })
-                            .when(supports_delete, |this| {
+                            .map(|this| {
                                 let agent = thread.agent_id.clone();
                                 let session_id = thread.session_id.clone();
                                 this.child(

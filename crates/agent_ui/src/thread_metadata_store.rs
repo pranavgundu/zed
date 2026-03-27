@@ -428,7 +428,6 @@ impl ThreadMetadataStore {
             | acp_thread::AcpThreadEvent::Error
             | acp_thread::AcpThreadEvent::LoadError(_)
             | acp_thread::AcpThreadEvent::Refusal => {
-                //fixme: Check if this we want this to be un-archived always
                 let metadata = ThreadMetadata::from_thread(false, &thread, cx);
                 self.save(metadata, cx);
             }
