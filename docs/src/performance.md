@@ -58,6 +58,7 @@ Open the profiler (tracy-profiler), you should see zed in the list of `Discovere
 Tracy is an increadibly powerful profiler which can do a lot however it's UI is not that friendly. This is not the place for an in depth guide to Tracy, I do however want to highlight one particular workflow that is helpful when figuring out why a piece of code is _sometimes_ slow.
 
 Here are the steps:
+
 1. Click the flamechart button at the top.
 2. Click on a function that takes a lot of time.
 3. Expand the list of function calls by clicking on main thread.
@@ -67,6 +68,7 @@ Here are the steps:
 7. Click on a caller to to get statistics on _it_.
 
 While normally the blue bars in the Tracy timeline corrospond to function calls they can time any part of a codebase. In the example below we have added an extra span "for block in edits" and added metadata to it: the block_height. You can do that like this:
+
 ```rust
 let span = ztracing::debug_span!("for block in edits", block_height = block.height());
 let _enter = span.enter(); // span guard, when this is dropped the span ends (and its duration is recorded)
@@ -79,7 +81,6 @@ let _enter = span.enter(); // span guard, when this is dropped the span ends (an
 <img width="1822" height="auto" alt="Click zoom to zone" src="https://github.com/user-attachments/assets/3391664d-7297-41d4-be17-ac9b2e2c85d1" />
 <img width="1964" height="auto" alt="Scroll to zoom in" src="https://github.com/user-attachments/assets/625c2bf4-a68d-40c4-becb-ade16bc9a8bc" />
 <img width="1888" height="auto" alt="Click on any of the zones to get statistics" src="https://github.com/user-attachments/assets/7e578825-2b63-4b7f-88f7-0cb16b8a3387" />
-
 
 # Task/Async profiling
 
