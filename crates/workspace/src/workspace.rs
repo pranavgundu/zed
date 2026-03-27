@@ -2209,6 +2209,22 @@ impl Workspace {
         did_set
     }
 
+    pub fn toggle_dock_panel_flexible_size(
+        &self,
+        dock: &Entity<Dock>,
+        panel: &dyn PanelHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let position = dock.read(cx).position();
+        let current_size = self.dock_size(&dock.read(cx), window, cx);
+        let current_ratio = current_size
+            .and_then(|size| self.flexible_dock_ratio_for_size(position, size, window, cx));
+        dock.update(cx, |dock, cx| {
+            dock.toggle_panel_flexible_size(panel, current_size, current_ratio, window, cx);
+        });
+    }
+
     fn dock_size(&self, dock: &Dock, window: &Window, cx: &App) -> Option<Pixels> {
         let panel = dock.active_panel()?;
         let size_state = dock

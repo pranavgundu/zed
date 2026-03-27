@@ -845,6 +845,8 @@ impl Dock {
     pub fn toggle_panel_flexible_size(
         &mut self,
         panel: &dyn PanelHandle,
+        current_size: Option<Pixels>,
+        current_ratio: Option<f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -860,6 +862,15 @@ impl Dock {
             .flexible
             .unwrap_or_else(|| entry.panel.supports_flexible_size(window, cx));
         entry.size_state.flexible = Some(!currently_flexible);
+        if currently_flexible {
+            if let Some(size) = current_size {
+                entry.size_state.size = Some(size);
+            }
+        } else {
+            if let Some(ratio) = current_ratio {
+                entry.size_state.flexible_size_ratio = Some(ratio);
+            }
+        }
         let panel_key = entry.panel.panel_key();
         let size_state = entry.size_state;
         let workspace = self.workspace.clone();
@@ -1134,6 +1145,7 @@ impl Render for PanelButtons {
         };
 
         let dock_entity = self.dock.clone();
+        let workspace = dock.workspace.clone();
         let mut buttons: Vec<_> = dock
             .panel_entries
             .iter()
@@ -1155,6 +1167,7 @@ impl Render for PanelButtons {
                     .and_then(|s| s.flexible)
                     .unwrap_or(supports_flexible);
                 let dock_for_menu = dock_entity.clone();
+                let workspace_for_menu = workspace.clone();
 
                 let is_active_button = Some(i) == active_index && is_open;
                 let (action, tooltip) = if is_active_button {
@@ -1205,6 +1218,7 @@ impl Render for PanelButtons {
                                     }
                                     let panel_for_flex = panel.clone();
                                     let dock_for_flex = dock_for_menu.clone();
+                                    let workspace_for_flex = workspace_for_menu.clone();
                                     menu = menu.toggleable_entry(
                                         "Flex Width",
                                         currently_flexible,
@@ -1212,18 +1226,22 @@ impl Render for PanelButtons {
                                         None,
                                         move |window, cx| {
                                             if !currently_flexible {
-                                                dock_for_flex.update(cx, |dock, cx| {
-                                                    dock.toggle_panel_flexible_size(
-                                                        panel_for_flex.as_ref(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
+                                                if let Some(ws) = workspace_for_flex.upgrade() {
+                                                    ws.update(cx, |workspace, cx| {
+                                                        workspace.toggle_dock_panel_flexible_size(
+                                                            &dock_for_flex,
+                                                            panel_for_flex.as_ref(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
                                             }
                                         },
                                     );
                                     let panel_for_fixed = panel.clone();
                                     let dock_for_fixed = dock_for_menu.clone();
+                                    let workspace_for_fixed = workspace_for_menu.clone();
                                     menu = menu.toggleable_entry(
                                         "Fixed Width",
                                         !currently_flexible,
@@ -1231,13 +1249,16 @@ impl Render for PanelButtons {
                                         None,
                                         move |window, cx| {
                                             if currently_flexible {
-                                                dock_for_fixed.update(cx, |dock, cx| {
-                                                    dock.toggle_panel_flexible_size(
-                                                        panel_for_fixed.as_ref(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
+                                                if let Some(ws) = workspace_for_fixed.upgrade() {
+                                                    ws.update(cx, |workspace, cx| {
+                                                        workspace.toggle_dock_panel_flexible_size(
+                                                            &dock_for_fixed,
+                                                            panel_for_fixed.as_ref(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
                                             }
                                         },
                                     );
