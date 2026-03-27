@@ -19,7 +19,7 @@ use gpui::{
 use menu::{
     Cancel, Confirm, SelectChild, SelectFirst, SelectLast, SelectNext, SelectParent, SelectPrevious,
 };
-use project::{AgentId, Event as ProjectEvent, linked_worktree_short_name};
+use project::{AgentId, AgentRegistryStore, Event as ProjectEvent, linked_worktree_short_name};
 use recent_projects::sidebar_recent_projects::SidebarRecentProjects;
 use ui::utils::platform_title_bar_height;
 
@@ -1025,17 +1025,6 @@ impl Sidebar {
         }
 
         cx.notify();
-    }
-
-    fn visible_thread_session_ids(&self) -> HashSet<acp::SessionId> {
-        self.contents
-            .entries
-            .iter()
-            .filter_map(|entry| match entry {
-                ListEntry::Thread(thread) => Some(thread.session_info.session_id.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     fn select_first_entry(&mut self) {
@@ -2977,6 +2966,9 @@ impl Sidebar {
         let Some(agent_panel) = active_workspace.read(cx).panel::<AgentPanel>(cx) else {
             return;
         };
+        let Some(agent_registry_store) = AgentRegistryStore::try_global(cx) else {
+            return;
+        };
 
         let agent_server_store = active_workspace
             .read(cx)
@@ -2986,13 +2978,13 @@ impl Sidebar {
             .downgrade();
 
         let agent_connection_store = agent_panel.read(cx).connection_store().downgrade();
-        let visible_sidebar_session_ids = self.visible_thread_session_ids();
 
         let archive_view = cx.new(|cx| {
             ThreadsArchiveView::new(
                 agent_connection_store.clone(),
                 agent_server_store.clone(),
-                visible_sidebar_session_ids.clone(),
+                agent_registry_store.downgrade(),
+                active_workspace.downgrade(),
                 window,
                 cx,
             )

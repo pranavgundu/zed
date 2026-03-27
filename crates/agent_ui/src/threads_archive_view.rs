@@ -1,29 +1,29 @@
 use crate::agent_connection_store::AgentConnectionStore;
+use crate::thread_import::ThreadImportModal;
 use crate::thread_metadata_store::{ThreadMetadata, ThreadMetadataStore};
 use crate::{Agent, RemoveSelectedThread};
-use acp_thread::AgentSessionListRequest;
+
 use agent::ThreadStore;
 use agent_client_protocol as acp;
 use agent_settings::AgentSettings;
 use chrono::{DateTime, Datelike as _, Local, NaiveDate, TimeDelta, Utc};
 use editor::Editor;
 use fs::Fs;
-use futures::FutureExt as _;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, ListState, Render,
     SharedString, Subscription, Task, WeakEntity, Window, list, prelude::*, px,
 };
 use itertools::Itertools as _;
 use menu::{Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
-use project::{AgentId, AgentServerStore};
+use project::{AgentId, AgentRegistryStore, AgentServerStore};
 use settings::Settings as _;
-use std::collections::HashSet;
 use theme::ActiveTheme;
 use ui::ThreadItem;
 use ui::{
     Divider, KeyBinding, Tooltip, WithScrollbar, prelude::*, utils::platform_title_bar_height,
 };
 use util::ResultExt;
+use workspace::Workspace;
 use zed_actions::agents_sidebar::FocusSidebarFilter;
 use zed_actions::editor::{MoveDown, MoveUp};
 
@@ -93,13 +93,6 @@ fn fuzzy_match_positions(query: &str, text: &str) -> Option<Vec<usize>> {
     }
 }
 
-fn should_show_archive_thread(
-    thread: &ThreadMetadata,
-    visible_sidebar_session_ids: &HashSet<acp::SessionId>,
-) -> bool {
-    thread.archived || !visible_sidebar_session_ids.contains(&thread.session_id)
-}
-
 pub enum ThreadsArchiveViewEvent {
     Close,
     Unarchive { thread: ThreadMetadata },
@@ -119,14 +112,16 @@ pub struct ThreadsArchiveView {
     _refresh_history_task: Task<()>,
     agent_connection_store: WeakEntity<AgentConnectionStore>,
     agent_server_store: WeakEntity<AgentServerStore>,
-    visible_sidebar_session_ids: HashSet<acp::SessionId>,
+    agent_registry_store: WeakEntity<AgentRegistryStore>,
+    workspace: WeakEntity<Workspace>,
 }
 
 impl ThreadsArchiveView {
     pub fn new(
         agent_connection_store: WeakEntity<AgentConnectionStore>,
         agent_server_store: WeakEntity<AgentServerStore>,
-        visible_sidebar_session_ids: HashSet<acp::SessionId>,
+        agent_registry_store: WeakEntity<AgentRegistryStore>,
+        workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -184,9 +179,10 @@ impl ThreadsArchiveView {
                 thread_metadata_store_subscription,
             ],
             _refresh_history_task: Task::ready(()),
+            agent_registry_store,
             agent_connection_store,
             agent_server_store,
-            visible_sidebar_session_ids,
+            workspace,
         };
 
         this.update_items(cx);
@@ -209,8 +205,7 @@ impl ThreadsArchiveView {
     fn update_items(&mut self, cx: &mut Context<Self>) {
         let sessions = ThreadMetadataStore::global(cx)
             .read(cx)
-            .entries()
-            .filter(|thread| should_show_archive_thread(thread, &self.visible_sidebar_session_ids))
+            .archived_entries()
             .sorted_by_cached_key(|t| t.created_at.unwrap_or(t.updated_at))
             .rev()
             .collect::<Vec<_>>();
@@ -533,6 +528,23 @@ impl ThreadsArchiveView {
         .detach_and_log_err(cx);
     }
 
+    fn show_thread_import_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(agent_server_store) = self.agent_server_store.upgrade() else {
+            return;
+        };
+        let Some(agent_registry_store) = self.agent_registry_store.upgrade() else {
+            return;
+        };
+
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.toggle_modal(window, cx, |window, cx| {
+                    ThreadImportModal::new(agent_server_store, agent_registry_store, window, cx)
+                });
+            })
+            .log_err();
+    }
+
     fn render_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_query = !self.filter_editor.read(cx).text(cx).is_empty();
         let sidebar_on_left = matches!(
@@ -580,16 +592,27 @@ impl ThreadsArchiveView {
             .when(show_focus_keybinding, |this| {
                 this.child(KeyBinding::for_action(&FocusSidebarFilter, cx))
             })
-            .when(has_query, |this| {
-                this.child(
-                    IconButton::new("clear_filter", IconName::Close)
-                        .icon_size(IconSize::Small)
-                        .tooltip(Tooltip::text("Clear Search"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.reset_filter_editor_text(window, cx);
-                            this.update_items(cx);
-                        })),
-                )
+            .map(|this| {
+                if has_query {
+                    this.child(
+                        IconButton::new("clear-filter", IconName::Close)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Clear Search"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.reset_filter_editor_text(window, cx);
+                                this.update_items(cx);
+                            })),
+                    )
+                } else {
+                    this.child(
+                        IconButton::new("import-thread", IconName::Close)
+                            .icon_size(IconSize::Small)
+                            .tooltip(Tooltip::text("Import ACP Threads"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_thread_import_modal(window, cx);
+                            })),
+                    )
+                }
             })
     }
 }
@@ -674,116 +697,5 @@ impl Render for ThreadsArchiveView {
             .size_full()
             .child(self.render_header(window, cx))
             .child(content)
-    }
-}
-
-fn import_threads(
-    agent_ids: Vec<AgentId>,
-    existing_sessions: HashSet<acp::SessionId>,
-    stores: Vec<Entity<AgentConnectionStore>>,
-    cx: &mut App,
-) -> Task<anyhow::Result<()>> {
-    let mut wait_for_connection_tasks = Vec::new();
-
-    for store in stores {
-        for agent_id in agent_ids.clone() {
-            let agent = Agent::from(agent_id.clone());
-            let server = agent.server(<dyn Fs>::global(cx), ThreadStore::global(cx));
-            let entry = store.update(cx, |store, cx| store.request_connection(agent, server, cx));
-            wait_for_connection_tasks
-                .push(entry.read(cx).wait_for_connection().map(|s| (agent_id, s)));
-        }
-    }
-
-    let mut session_list_tasks = Vec::new();
-    cx.spawn(async move |cx| {
-        let results = futures::future::join_all(wait_for_connection_tasks).await;
-        for (agent, result) in results {
-            let Some(state) = result.log_err() else {
-                continue;
-            };
-            let Some(list) = cx.update(|cx| state.connection.session_list(cx)) else {
-                continue;
-            };
-            let task = cx.update(|cx| {
-                list.list_sessions(AgentSessionListRequest::default(), cx)
-                    .map(|r| (agent, r))
-            });
-            session_list_tasks.push(task);
-        }
-
-        let mut to_insert = Vec::new();
-        let results = futures::future::join_all(session_list_tasks).await;
-        for (agent_id, result) in results {
-            let Some(response) = result.log_err() else {
-                continue;
-            };
-            to_insert.extend(response.sessions.into_iter().filter_map(|s| {
-                if existing_sessions.contains(&s.session_id) {
-                    return None;
-                }
-                let folder_paths = s.work_dirs?;
-                Some(ThreadMetadata {
-                    session_id: s.session_id,
-                    agent_id: agent_id.clone(),
-                    title: s
-                        .title
-                        .unwrap_or_else(|| crate::DEFAULT_THREAD_TITLE.into()),
-                    updated_at: s.updated_at.unwrap_or_else(|| Utc::now()),
-                    created_at: s.created_at,
-                    folder_paths,
-                    archived: true,
-                })
-            }));
-        }
-
-        log::info!("Importing {} threads into archive", to_insert.len());
-        cx.update(|cx| {
-            ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save_all(to_insert, cx))
-        });
-        Ok(())
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use project::AgentId;
-    use std::{path::PathBuf, sync::Arc};
-    use util::path_list::PathList;
-
-    fn thread_metadata(session_id: &str, archived: bool) -> ThreadMetadata {
-        ThreadMetadata {
-            session_id: acp::SessionId::new(Arc::from(session_id)),
-            agent_id: AgentId::new("zed"),
-            title: SharedString::from(session_id.to_string()),
-            updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
-            created_at: None,
-            folder_paths: PathList::new(&[PathBuf::from("/project")]),
-            archived,
-        }
-    }
-
-    #[test]
-    fn test_should_show_archive_thread_hides_only_visible_non_archived_threads() {
-        let visible_sidebar_session_ids = [
-            acp::SessionId::new(Arc::from("visible-non-archived")),
-            acp::SessionId::new(Arc::from("visible-archived")),
-        ]
-        .into_iter()
-        .collect::<HashSet<_>>();
-
-        assert!(!should_show_archive_thread(
-            &thread_metadata("visible-non-archived", false),
-            &visible_sidebar_session_ids,
-        ));
-        assert!(should_show_archive_thread(
-            &thread_metadata("hidden-non-archived", false),
-            &visible_sidebar_session_ids,
-        ));
-        assert!(should_show_archive_thread(
-            &thread_metadata("visible-archived", true),
-            &visible_sidebar_session_ids,
-        ));
     }
 }
