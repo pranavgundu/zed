@@ -3065,7 +3065,7 @@ impl CollabPanel {
         };
 
         h_flex()
-            .id(channel_id.0 as usize)
+            .id(ix)
             .group("")
             .h_6()
             .w_full()
@@ -3095,7 +3095,7 @@ impl CollabPanel {
                 }),
             )
             .child(
-                ListItem::new(channel_id.0 as usize)
+                ListItem::new(ix)
                     // Add one level of depth for the disclosure arrow.
                     .height(px(26.))
                     .indent_level(depth + 1)
