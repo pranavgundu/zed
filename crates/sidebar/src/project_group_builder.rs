@@ -179,7 +179,11 @@ impl ProjectGroupBuilder {
     /// Whether the given group should load threads for a linked worktree at
     /// `worktree_path`. Returns `false` if the worktree already has an open
     /// workspace in the group (its threads are loaded via the workspace loop)
-    /// or if the worktree's canonical path list doesn't match `group_path_list`.
+    /// or if the worktree's canonical repo path isn't one of the group's roots.
+    ///
+    /// When multiple groups contain the same main repo, all of them will
+    /// return `true`. Callers must deduplicate across groups (e.g. using
+    /// `current_session_ids`) so that only the first group claims the thread.
     pub fn group_owns_worktree(
         &self,
         group: &ProjectGroup,
@@ -190,17 +194,11 @@ impl ProjectGroupBuilder {
         if group.covered_paths.contains(&worktree_arc) {
             return false;
         }
-        let canonical = self.canonicalize_path_list(&PathList::new(&[worktree_path]));
-        canonical == *group_path_list
-    }
-
-    fn canonicalize_path_list(&self, path_list: &PathList) -> PathList {
-        let paths: Vec<_> = path_list
+        let canonical = self.canonicalize_path(worktree_path);
+        group_path_list
             .paths()
             .iter()
-            .map(|p| self.canonicalize_path(p).to_path_buf())
-            .collect();
-        PathList::new(&paths)
+            .any(|p| Path::new(p) == canonical)
     }
 
     pub fn groups(&self) -> impl Iterator<Item = (&ProjectGroupName, &ProjectGroup)> {

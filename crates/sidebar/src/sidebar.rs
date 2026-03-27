@@ -770,6 +770,9 @@ impl Sidebar {
                         if !seen_session_ids.insert(row.session_id.clone()) {
                             continue;
                         }
+                        if current_session_ids.contains(&row.session_id) {
+                            continue;
+                        }
                         let worktree_info = row.folder_paths.paths().first().and_then(|path| {
                             let canonical = project_groups.canonicalize_path(path);
                             if canonical != path.as_path() {
@@ -7140,17 +7143,15 @@ mod tests {
         multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
         cx.run_until_parked();
 
-        // BUG: The thread appears under [project] (the individual workspace)
-        // because group_owns_worktree canonicalizes /wt-feature to /project
-        // and matches it to the [project] group. It should instead appear
-        // under [project, project-b] since that workspace owns the repo.
+        // The thread should appear under [project, project-b] because that
+        // group was created first and contains the main repo /project.
         assert_eq!(
             visible_entries_as_strings(&sidebar, cx),
             vec![
                 "v [project, project-b]",
-                "  [+ New Thread]",
-                "v [project]",
                 "  Worktree Thread {wt-feature}",
+                "v [project]",
+                "  [+ New Thread]",
             ]
         );
     }
