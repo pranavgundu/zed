@@ -8,8 +8,7 @@ use gpui::{
     pulsating_between,
 };
 use itertools::Itertools as _;
-use std::time::Duration;
-use util::path_list::PathList;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AgentThreadStatus {
@@ -39,7 +38,7 @@ pub struct ThreadItem {
     hovered: bool,
     added: Option<usize>,
     removed: Option<usize>,
-    project_paths: Option<PathList>,
+    project_paths: Option<Arc<[PathBuf]>>,
     worktree: Option<SharedString>,
     worktree_full_path: Option<SharedString>,
     worktree_highlight_positions: Vec<usize>,
@@ -150,7 +149,7 @@ impl ThreadItem {
         self
     }
 
-    pub fn project_paths(mut self, paths: PathList) -> Self {
+    pub fn project_paths(mut self, paths: Arc<[PathBuf]>) -> Self {
         self.project_paths = Some(paths);
         self
     }
@@ -330,7 +329,7 @@ impl RenderOnce for ThreadItem {
 
         let project_paths = self.project_paths.as_ref().and_then(|paths| {
             let paths_str = paths
-                .paths()
+                .as_ref()
                 .iter()
                 .filter_map(|p| p.file_name())
                 .filter_map(|name| name.to_str())
