@@ -4,10 +4,11 @@ use chrono::{DateTime, Datelike as _, Local, NaiveDate, TimeDelta, Utc};
 use editor::Editor;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, ListState, Render,
-    SharedString, Subscription, Task, Window, list, prelude::*, px,
+    SharedString, Subscription, Task, WeakEntity, Window, list, prelude::*, px,
 };
 use itertools::Itertools as _;
 use menu::{Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
+use project::{AgentId, AgentServerStore};
 use settings::Settings as _;
 use theme::ActiveTheme;
 use ui::{
@@ -100,10 +101,15 @@ pub struct ThreadsArchiveView {
     filter_editor: Entity<Editor>,
     _subscriptions: Vec<gpui::Subscription>,
     _refresh_history_task: Task<()>,
+    agent_server_store: WeakEntity<AgentServerStore>,
 }
 
 impl ThreadsArchiveView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        agent_server_store: WeakEntity<AgentServerStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
 
         let filter_editor = cx.new(|cx| {
@@ -158,6 +164,7 @@ impl ThreadsArchiveView {
                 thread_metadata_store_subscription,
             ],
             _refresh_history_task: Task::ready(()),
+            agent_server_store,
         };
         this.update_items(cx);
         this
@@ -337,6 +344,28 @@ impl ThreadsArchiveView {
         self.unarchive_thread(thread.clone(), window, cx);
     }
 
+    fn agent_icon(&self, agent: Option<&AgentId>, cx: &App) -> Icon {
+        let icon = match agent {
+            Some(agent) if agent.as_ref() == agent::ZED_AGENT_ID.as_ref() => {
+                Icon::new(IconName::ZedAgent)
+            }
+            Some(agent) => {
+                let icon = self
+                    .agent_server_store
+                    .upgrade()
+                    .and_then(|store| store.read(cx).agent_icon(agent));
+
+                if let Some(icon) = icon {
+                    Icon::from_external_svg(icon)
+                } else {
+                    Icon::new(IconName::Sparkle)
+                }
+            }
+            None => Icon::new(IconName::ZedAgent),
+        };
+        icon.color(Color::Muted).size(IconSize::Small)
+    }
+
     fn render_list_entry(
         &mut self,
         ix: usize,
@@ -433,7 +462,12 @@ impl ThreadsArchiveView {
                                     .w_full()
                                     .gap_1()
                                     .justify_between()
-                                    .child(title_label)
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(self.agent_icon(thread.agent_id.as_ref(), cx))
+                                            .child(title_label),
+                                    )
                                     .when(hovered || is_focused, |this| {
                                         this.child(
                                             h_flex().gap_0p5().child(

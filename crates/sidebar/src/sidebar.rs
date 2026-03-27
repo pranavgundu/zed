@@ -3025,7 +3025,23 @@ impl Sidebar {
     }
 
     fn show_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let archive_view = cx.new(|cx| ThreadsArchiveView::new(window, cx));
+        let Some(active_workspace) = self.multi_workspace.upgrade().and_then(|w| {
+            w.read(cx)
+                .workspaces()
+                .get(w.read(cx).active_workspace_index())
+                .cloned()
+        }) else {
+            return;
+        };
+
+        let agent_server_store = active_workspace
+            .read(cx)
+            .project()
+            .read(cx)
+            .agent_server_store()
+            .downgrade();
+
+        let archive_view = cx.new(|cx| ThreadsArchiveView::new(agent_server_store, window, cx));
         let subscription = cx.subscribe_in(
             &archive_view,
             window,
