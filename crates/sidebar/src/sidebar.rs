@@ -3,7 +3,7 @@ use action_log::DiffStats;
 use agent_client_protocol::{self as acp};
 use agent_settings::AgentSettings;
 use agent_ui::thread_metadata_store::{
-    ArchivedGitWorktree, SidebarThreadMetadataStore, ThreadMetadata, ThreadWorktreeLink,
+    ArchivedGitWorktree, SidebarThreadMetadataStore, ThreadMetadata,
 };
 use agent_ui::threads_archive_view::{
     ThreadsArchiveView, ThreadsArchiveViewEvent, format_history_entry_timestamp,
@@ -2156,59 +2156,52 @@ impl Sidebar {
 
     fn maybe_restore_git_worktree(
         &mut self,
-        _worktree_path: std::path::PathBuf,
+        worktree_path: std::path::PathBuf,
         agent: Agent,
         session_info: acp_thread::AgentSessionInfo,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let session_id = session_info.session_id.clone();
-
         let Some(multi_workspace) = self.multi_workspace.upgrade() else {
             return;
         };
         let workspaces = multi_workspace.read(cx).workspaces().to_vec();
+        let worktree_path_str = worktree_path.to_string_lossy().to_string();
 
         cx.spawn_in(window, async move |this, cx| {
             let store = cx.update(|_window, cx| SidebarThreadMetadataStore::global(cx))?;
 
-            let link = store
+            let archived = store
                 .update(cx, |store, cx| {
-                    store.get_thread_worktree_link(session_id.0.to_string(), cx)
+                    store.get_archived_worktree_by_path(worktree_path_str, cx)
                 })
                 .await?;
 
-            // Unlink this thread from the join table now that we're unarchiving.
-            store
-                .update(cx, |store, cx| {
-                    store.unlink_thread_from_worktree(session_id.0.to_string(), cx)
-                })
-                .await?;
-
-            match link {
+            match archived {
                 None => {
-                    // No worktree link — just open normally.
+                    // No archived worktree for this path — just open normally.
                     this.update_in(cx, |this, window, cx| {
                         this.activate_archived_thread_in_workspace(agent, session_info, window, cx);
                     })?;
                 }
-                Some(ThreadWorktreeLink {
-                    archived_worktree: None,
-                    main_repo_path,
-                    ..
-                }) => {
+                Some(row) if row.commit_hash.is_empty() => {
                     // Worktree was deleted without a WIP commit (user chose
                     // "Delete Anyway"). Open at the main repo path instead.
+                    let remaining = store
+                        .update(cx, |store, cx| store.decrement_thread_count(row.id, cx))
+                        .await?;
+
                     let mut updated_info = session_info;
-                    updated_info.work_dirs = Some(PathList::new(&[main_repo_path]));
+                    updated_info.work_dirs = Some(PathList::new(&[row.main_repo_path.clone()]));
                     this.update_in(cx, |this, window, cx| {
                         this.activate_archived_thread_in_workspace(agent, updated_info, window, cx);
                     })?;
+
+                    if remaining == 0 {
+                        Self::maybe_cleanup_archived_worktree(&row, &store, &workspaces, cx).await;
+                    }
                 }
-                Some(ThreadWorktreeLink {
-                    archived_worktree: Some(row),
-                    ..
-                }) => {
+                Some(row) => {
                     // Full restore from WIP commit.
                     Self::restore_archived_worktree(
                         &row,
@@ -2220,8 +2213,14 @@ impl Sidebar {
                     )
                     .await?;
 
-                    // Cleanup if no more threads reference this row.
-                    Self::maybe_cleanup_archived_worktree(&row, &store, &workspaces, cx).await;
+                    // Decrement and cleanup if no more threads reference this row.
+                    let remaining = store
+                        .update(cx, |store, cx| store.decrement_thread_count(row.id, cx))
+                        .await?;
+
+                    if remaining == 0 {
+                        Self::maybe_cleanup_archived_worktree(&row, &store, &workspaces, cx).await;
+                    }
                 }
             }
 
@@ -2512,21 +2511,6 @@ impl Sidebar {
         workspaces: &[Entity<Workspace>],
         cx: &mut AsyncWindowContext,
     ) {
-        let remaining = store
-            .update(cx, |store, cx| {
-                store.count_threads_for_archived_worktree(row.id, cx)
-            })
-            .await;
-
-        let remaining = match remaining {
-            Ok(count) => count,
-            Err(_) => return,
-        };
-
-        if remaining > 0 {
-            return;
-        }
-
         // Delete the git ref from the main repo.
         let Ok(main_repo) = cx.update(|_window, cx| {
             workspaces.iter().find_map(|workspace| {
@@ -2892,6 +2876,16 @@ impl Sidebar {
             .entries_for_path(&folder_paths)
             .any(|entry| &entry.session_id != session_id);
 
+        if !is_last_thread {
+            return;
+        }
+
+        // Count all threads for this worktree (including the one being archived).
+        let thread_count = store_entity
+            .read(cx)
+            .entries_for_path(&folder_paths)
+            .count() as i64;
+
         let main_repo = workspaces.iter().find_map(|workspace| {
             let project = workspace.read(cx).project().clone();
             project
@@ -2905,30 +2899,13 @@ impl Sidebar {
                 })
         });
 
-        let session_id = session_id.clone();
         let fs = <dyn fs::Fs>::global(cx);
         let worktree_path_str = worktree_path.to_string_lossy().to_string();
         let main_repo_path_str = main_repo_path.to_string_lossy().to_string();
         let branch_name_clone = branch_name.clone();
 
         cx.spawn_in(window, async move |_this, cx| {
-            // Link this thread to the worktree in the join table.
             let store = cx.update(|_window, cx| SidebarThreadMetadataStore::global(cx))?;
-            store
-                .update(cx, |store, cx| {
-                    store.link_thread_to_worktree(
-                        session_id.0.to_string(),
-                        worktree_path_str.clone(),
-                        main_repo_path_str.clone(),
-                        branch_name_clone.clone(),
-                        cx,
-                    )
-                })
-                .await?;
-
-            if !is_last_thread {
-                return anyhow::Ok(());
-            }
 
             // === Last thread: WIP commit, ref creation, and worktree deletion ===
 
@@ -2994,22 +2971,28 @@ impl Sidebar {
 
                 match answer.await {
                     Ok(0) => {
-                        // "Delete Anyway" — proceed with deletion, no WIP commit.
+                        // "Delete Anyway" — create record without commit hash so
+                        // unarchiving knows the worktree was deleted.
+                        store
+                            .update(cx, |store, cx| {
+                                store.create_archived_worktree(
+                                    worktree_path_str.clone(),
+                                    main_repo_path_str.clone(),
+                                    branch_name_clone.clone(),
+                                    String::new(),
+                                    thread_count,
+                                    cx,
+                                )
+                            })
+                            .await?;
                     }
                     _ => {
                         // "Cancel" — undo the archive.
-                        // Re-save the thread metadata to un-archive it.
                         if let Some(metadata) = thread_metadata {
                             store.update(cx, |store, cx| {
                                 store.save(metadata, cx);
                             });
                         }
-                        // Remove the join table entry for this thread.
-                        store
-                            .update(cx, |store, cx| {
-                                store.unlink_thread_from_worktree(session_id.0.to_string(), cx)
-                            })
-                            .await?;
                         return anyhow::Ok(());
                     }
                 }
@@ -3039,6 +3022,7 @@ impl Sidebar {
                             main_repo_path_str,
                             branch_name_clone,
                             commit_hash.clone(),
+                            thread_count,
                             cx,
                         )
                     })

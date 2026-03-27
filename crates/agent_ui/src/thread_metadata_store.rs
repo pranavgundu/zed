@@ -182,14 +182,8 @@ pub struct ArchivedGitWorktree {
     pub main_repo_path: PathBuf,
     pub branch_name: String,
     pub commit_hash: String,
+    pub thread_count: i64,
     pub restored: bool,
-}
-
-pub struct ThreadWorktreeLink {
-    pub worktree_path: PathBuf,
-    pub main_repo_path: PathBuf,
-    pub branch_name: String,
-    pub archived_worktree: Option<ArchivedGitWorktree>,
 }
 
 /// The store holds all metadata needed to show threads in the sidebar.
@@ -329,61 +323,44 @@ impl SidebarThreadMetadataStore {
             .log_err();
     }
 
-    pub fn link_thread_to_worktree(
-        &self,
-        session_id: String,
-        worktree_path: String,
-        main_repo_path: String,
-        branch_name: String,
-        cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<()>> {
-        let db = self.db.clone();
-        cx.background_spawn(async move {
-            db.link_thread_to_worktree(&session_id, &worktree_path, &main_repo_path, &branch_name)
-                .await
-        })
-    }
-
     pub fn create_archived_worktree(
         &self,
         worktree_path: String,
         main_repo_path: String,
         branch_name: String,
         commit_hash: String,
+        thread_count: i64,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<i64>> {
         let db = self.db.clone();
         cx.background_spawn(async move {
-            db.create_archived_worktree(&worktree_path, &main_repo_path, &branch_name, &commit_hash)
-                .await
+            db.create_archived_worktree(
+                &worktree_path,
+                &main_repo_path,
+                &branch_name,
+                &commit_hash,
+                thread_count,
+            )
+            .await
         })
     }
 
-    pub fn get_thread_worktree_link(
+    pub fn get_archived_worktree_by_path(
         &self,
-        session_id: String,
+        worktree_path: String,
         cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<Option<ThreadWorktreeLink>>> {
+    ) -> Task<anyhow::Result<Option<ArchivedGitWorktree>>> {
         let db = self.db.clone();
-        cx.background_spawn(async move { db.get_thread_worktree_link(&session_id).await })
+        cx.background_spawn(async move { db.get_archived_worktree_by_path(&worktree_path).await })
     }
 
-    pub fn unlink_thread_from_worktree(
-        &self,
-        session_id: String,
-        cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<()>> {
-        let db = self.db.clone();
-        cx.background_spawn(async move { db.unlink_thread_from_worktree(&session_id).await })
-    }
-
-    pub fn count_threads_for_archived_worktree(
+    pub fn decrement_thread_count(
         &self,
         id: i64,
         cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<usize>> {
+    ) -> Task<anyhow::Result<i64>> {
         let db = self.db.clone();
-        cx.background_spawn(async move { db.count_threads_for_archived_worktree(id).await })
+        cx.background_spawn(async move { db.decrement_thread_count(id).await })
     }
 
     pub fn delete_archived_worktree(
@@ -566,6 +543,11 @@ impl Domain for ThreadMetadataDb {
                 archived_worktree_id INTEGER REFERENCES archived_git_worktrees(id)
             ) STRICT;
         ),
+        sql!(
+            DROP TABLE IF EXISTS archived_thread_worktrees;
+            ALTER TABLE archived_git_worktrees ADD COLUMN thread_count INTEGER NOT NULL DEFAULT 0;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_archived_worktrees_path ON archived_git_worktrees(worktree_path);
+        ),
     ];
 }
 
@@ -634,39 +616,13 @@ impl ThreadMetadataDb {
         .await
     }
 
-    pub async fn link_thread_to_worktree(
-        &self,
-        session_id: &str,
-        worktree_path: &str,
-        main_repo_path: &str,
-        branch_name: &str,
-    ) -> anyhow::Result<()> {
-        let session_id = session_id.to_string();
-        let worktree_path = worktree_path.to_string();
-        let main_repo_path = main_repo_path.to_string();
-        let branch_name = branch_name.to_string();
-        self.write(move |conn| {
-            let mut stmt = Statement::prepare(
-                conn,
-                "INSERT OR REPLACE INTO archived_thread_worktrees(\
-                     session_id, worktree_path, main_repo_path, branch_name\
-                 ) VALUES (?, ?, ?, ?)",
-            )?;
-            let mut i = stmt.bind(&session_id, 1)?;
-            i = stmt.bind(&worktree_path, i)?;
-            i = stmt.bind(&main_repo_path, i)?;
-            stmt.bind(&branch_name, i)?;
-            stmt.exec()
-        })
-        .await
-    }
-
     pub async fn create_archived_worktree(
         &self,
         worktree_path: &str,
         main_repo_path: &str,
         branch_name: &str,
         commit_hash: &str,
+        thread_count: i64,
     ) -> anyhow::Result<i64> {
         let worktree_path = worktree_path.to_string();
         let main_repo_path = main_repo_path.to_string();
@@ -676,70 +632,58 @@ impl ThreadMetadataDb {
             let mut stmt = Statement::prepare(
                 conn,
                 "INSERT INTO archived_git_worktrees(\
-                     worktree_path, main_repo_path, branch_name, commit_hash\
-                 ) VALUES (?, ?, ?, ?)",
+                     worktree_path, main_repo_path, branch_name, commit_hash, thread_count\
+                 ) VALUES (?, ?, ?, ?, ?)",
             )?;
             let mut i = stmt.bind(&worktree_path, 1)?;
             i = stmt.bind(&main_repo_path, i)?;
             i = stmt.bind(&branch_name, i)?;
-            stmt.bind(&commit_hash, i)?;
+            i = stmt.bind(&commit_hash, i)?;
+            stmt.bind(&thread_count, i)?;
             stmt.exec()?;
 
             let mut id_stmt = Statement::prepare(conn, "SELECT last_insert_rowid()")?;
             let id = id_stmt
                 .maybe_row::<i64>()?
                 .ok_or_else(|| anyhow::anyhow!("No row ID returned after INSERT"))?;
-
-            // Link all threads for this worktree path to the new row.
-            let mut link_stmt = Statement::prepare(
-                conn,
-                "UPDATE archived_thread_worktrees \
-                 SET archived_worktree_id = ? \
-                 WHERE worktree_path = ? AND archived_worktree_id IS NULL",
-            )?;
-            link_stmt.bind(&id, 1)?;
-            link_stmt.bind(&worktree_path, 2)?;
-            link_stmt.exec()?;
-
             Ok(id)
         })
         .await
     }
 
-    pub async fn get_thread_worktree_link(
+    pub async fn get_archived_worktree_by_path(
         &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<ThreadWorktreeLink>> {
-        let session_id = session_id.to_string();
-        self.select_row_bound::<String, ThreadWorktreeLink>(
-            "SELECT \
-                 tw.worktree_path, tw.main_repo_path, tw.branch_name, \
-                 tw.archived_worktree_id, \
-                 w.worktree_path, w.main_repo_path, w.branch_name, w.commit_hash, w.restored \
-             FROM archived_thread_worktrees tw \
-             LEFT JOIN archived_git_worktrees w ON w.id = tw.archived_worktree_id \
-             WHERE tw.session_id = ?",
-        )?(session_id)
+        worktree_path: &str,
+    ) -> anyhow::Result<Option<ArchivedGitWorktree>> {
+        let worktree_path = worktree_path.to_string();
+        self.select_row_bound::<String, ArchivedGitWorktree>(
+            "SELECT id, worktree_path, main_repo_path, branch_name, commit_hash, thread_count, restored \
+             FROM archived_git_worktrees \
+             WHERE worktree_path = ?",
+        )?(worktree_path)
     }
 
-    pub async fn unlink_thread_from_worktree(&self, session_id: &str) -> anyhow::Result<()> {
-        let session_id = session_id.to_string();
+    pub async fn decrement_thread_count(&self, id: i64) -> anyhow::Result<i64> {
         self.write(move |conn| {
             let mut stmt = Statement::prepare(
                 conn,
-                "DELETE FROM archived_thread_worktrees WHERE session_id = ?",
+                "UPDATE archived_git_worktrees \
+                 SET thread_count = MAX(thread_count - 1, 0) \
+                 WHERE id = ?",
             )?;
-            stmt.bind(&session_id, 1)?;
-            stmt.exec()
+            stmt.bind(&id, 1)?;
+            stmt.exec()?;
+
+            let mut count_stmt = Statement::prepare(
+                conn,
+                "SELECT thread_count FROM archived_git_worktrees WHERE id = ?",
+            )?;
+            count_stmt.bind(&id, 1)?;
+            count_stmt
+                .maybe_row::<i64>()?
+                .ok_or_else(|| anyhow::anyhow!("Archived worktree row not found"))
         })
         .await
-    }
-
-    pub async fn count_threads_for_archived_worktree(&self, id: i64) -> anyhow::Result<usize> {
-        let counts = self.select_bound::<i64, i64>(
-            "SELECT COUNT(*) FROM archived_thread_worktrees WHERE archived_worktree_id = ?",
-        )?(id)?;
-        Ok(counts.into_iter().next().unwrap_or(0) as usize)
     }
 
     pub async fn delete_archived_worktree(&self, id: i64) -> anyhow::Result<()> {
@@ -824,6 +768,7 @@ impl Column for ArchivedGitWorktree {
         let (main_repo_path_str, next): (String, i32) = Column::column(statement, next)?;
         let (branch_name, next): (String, i32) = Column::column(statement, next)?;
         let (commit_hash, next): (String, i32) = Column::column(statement, next)?;
+        let (thread_count, next): (i64, i32) = Column::column(statement, next)?;
         let (restored_int, next): (i64, i32) = Column::column(statement, next)?;
         Ok((
             ArchivedGitWorktree {
@@ -832,51 +777,8 @@ impl Column for ArchivedGitWorktree {
                 main_repo_path: PathBuf::from(main_repo_path_str),
                 branch_name,
                 commit_hash,
+                thread_count,
                 restored: restored_int != 0,
-            },
-            next,
-        ))
-    }
-}
-
-impl Column for ThreadWorktreeLink {
-    fn column(statement: &mut Statement, start_index: i32) -> anyhow::Result<(Self, i32)> {
-        let (worktree_path_str, next): (String, i32) = Column::column(statement, start_index)?;
-        let (main_repo_path_str, next): (String, i32) = Column::column(statement, next)?;
-        let (branch_name, next): (String, i32) = Column::column(statement, next)?;
-        let (archived_worktree_id, next): (Option<i64>, i32) = Column::column(statement, next)?;
-        let (aw_worktree_path, next): (Option<String>, i32) = Column::column(statement, next)?;
-        let (aw_main_repo_path, next): (Option<String>, i32) = Column::column(statement, next)?;
-        let (aw_branch_name, next): (Option<String>, i32) = Column::column(statement, next)?;
-        let (aw_commit_hash, next): (Option<String>, i32) = Column::column(statement, next)?;
-        let (aw_restored, next): (Option<i64>, i32) = Column::column(statement, next)?;
-
-        let archived_worktree = match (
-            archived_worktree_id,
-            aw_worktree_path,
-            aw_main_repo_path,
-            aw_branch_name,
-            aw_commit_hash,
-        ) {
-            (Some(id), Some(wt_path), Some(mr_path), Some(bn), Some(ch)) => {
-                Some(ArchivedGitWorktree {
-                    id,
-                    worktree_path: PathBuf::from(wt_path),
-                    main_repo_path: PathBuf::from(mr_path),
-                    branch_name: bn,
-                    commit_hash: ch,
-                    restored: aw_restored.unwrap_or(0) != 0,
-                })
-            }
-            _ => None,
-        };
-
-        Ok((
-            ThreadWorktreeLink {
-                worktree_path: PathBuf::from(worktree_path_str),
-                main_repo_path: PathBuf::from(main_repo_path_str),
-                branch_name,
-                archived_worktree,
             },
             next,
         ))
