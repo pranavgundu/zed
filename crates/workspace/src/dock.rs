@@ -1201,15 +1201,18 @@ impl Render for PanelButtons {
                             ContextMenu::build(window, cx, |mut menu, _, cx| {
                                 let mut has_position_entries = false;
                                 for position in POSITIONS {
-                                    if position != dock_position
-                                        && panel.position_is_valid(position, cx)
-                                    {
+                                    if panel.position_is_valid(position, cx) {
+                                        let is_current = position == dock_position;
                                         let panel = panel.clone();
-                                        menu = menu.entry(
+                                        menu = menu.toggleable_entry(
                                             format!("Dock {}", position.label()),
+                                            is_current,
+                                            IconPosition::Start,
                                             None,
                                             move |window, cx| {
-                                                panel.set_position(position, window, cx);
+                                                if !is_current {
+                                                    panel.set_position(position, window, cx);
+                                                }
                                             },
                                         );
                                         has_position_entries = true;
