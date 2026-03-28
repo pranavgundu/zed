@@ -292,12 +292,12 @@ impl DockPosition {
 pub struct PanelSizeState {
     pub size: Option<Pixels>,
     #[serde(default)]
-    pub flexible_size_ratio: Option<f32>,
+    pub flex: Option<f32>,
 }
 
 impl PanelSizeState {
     pub fn is_flexible(&self, default: bool) -> bool {
-        if self.flexible_size_ratio.is_some() {
+        if self.flex.is_some() {
             true
         } else if self.size.is_some() {
             false
@@ -856,7 +856,7 @@ impl Dock {
         &mut self,
         panel: &dyn PanelHandle,
         current_size: Option<Pixels>,
-        current_ratio: Option<f32>,
+        current_flex: Option<f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -872,9 +872,9 @@ impl Dock {
             .is_flexible(entry.panel.supports_flexible_size(window, cx));
         if currently_flexible {
             entry.size_state.size = current_size;
-            entry.size_state.flexible_size_ratio = None;
+            entry.size_state.flex = None;
         } else {
-            entry.size_state.flexible_size_ratio = current_ratio;
+            entry.size_state.flex = current_flex;
             entry.size_state.size = None;
         }
         let panel_key = entry.panel.panel_key();
@@ -894,7 +894,7 @@ impl Dock {
     pub fn resize_active_panel(
         &mut self,
         size: Option<Pixels>,
-        ratio: Option<f32>,
+        flex: Option<f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -903,11 +903,11 @@ impl Dock {
         {
             let size = size.map(|size| size.max(RESIZE_HANDLE_SIZE).round());
 
-            let use_flexible = entry
+            let use_flex = entry
                 .size_state
                 .is_flexible(entry.panel.supports_flexible_size(window, cx));
-            if use_flexible {
-                entry.size_state.flexible_size_ratio = ratio;
+            if use_flex {
+                entry.size_state.flex = flex;
             } else {
                 entry.size_state.size = size;
             }
@@ -930,7 +930,7 @@ impl Dock {
     pub fn resize_all_panels(
         &mut self,
         size: Option<Pixels>,
-        ratio: Option<f32>,
+        flex: Option<f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -938,11 +938,11 @@ impl Dock {
 
         for entry in &mut self.panel_entries {
             let size = size.map(|size| size.max(RESIZE_HANDLE_SIZE).round());
-            let use_flexible = entry
+            let use_flex = entry
                 .size_state
                 .is_flexible(entry.panel.supports_flexible_size(window, cx));
-            if use_flexible {
-                entry.size_state.flexible_size_ratio = ratio;
+            if use_flex {
+                entry.size_state.flex = flex;
             } else {
                 entry.size_state.size = size;
             }
@@ -1412,7 +1412,7 @@ pub mod test {
         fn initial_size_state(&self, _window: &Window, _: &App) -> PanelSizeState {
             PanelSizeState {
                 size: None,
-                flexible_size_ratio: None,
+                flex: None,
             }
         }
 
