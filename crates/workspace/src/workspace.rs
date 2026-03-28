@@ -150,7 +150,7 @@ pub use workspace_settings::{
 };
 use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 
-use crate::{item::ItemBufferKind, notifications::NotificationId};
+use crate::{dock::PanelSizeState, item::ItemBufferKind, notifications::NotificationId};
 use crate::{
     persistence::{
         SerializedAxis,
@@ -2219,7 +2219,7 @@ impl Workspace {
         let position = dock.read(cx).position();
         let current_size = self.dock_size(&dock.read(cx), window, cx);
         let current_flex =
-            current_size.and_then(|size| self.dock_flex_for_size(position, size, window, cx));
+            current_size.and_then(|size| self.dock_flex_for_size(position, size, cx));
         dock.update(cx, |dock, cx| {
             dock.toggle_panel_flexible_size(panel, current_size, current_flex, window, cx);
         });
@@ -2232,26 +2232,29 @@ impl Workspace {
             .unwrap_or_default();
         let position = dock.position();
 
-        let use_flexible = size_state.is_flexible(panel.supports_flexible_size(window, cx));
+        let use_flex = size_state.is_flexible(panel.supports_flexible_size(window, cx));
 
         if position.axis() == Axis::Horizontal
-            && use_flexible
-            && let Some(grow) = size_state.flex.or_else(|| self.default_dock_flex(position))
+            && use_flex
+            && let Some(flex) = size_state.flex.or_else(|| self.default_dock_flex(position))
         {
             let workspace_width = self.bounds.size.width;
             if workspace_width <= Pixels::ZERO {
                 return None;
             }
-            let grow = grow.max(0.001);
-            if let Some(opposite_grow) = self.opposite_dock_flex(position, window, cx) {
+            let flex = flex.max(0.001);
+            let opposite_dock_size_state = self.opposite_dock_size_state(position, cx);
+            if let Some(opposite_flex) = opposite_dock_size_state.and_then(|s| s.flex) {
                 // Both docks are flex items sharing the full workspace width.
-                let total_grow = grow + 1.0 + opposite_grow;
-                return Some((grow / total_grow * workspace_width).max(RESIZE_HANDLE_SIZE));
+                let total_flex = flex + 1.0 + opposite_flex;
+                return Some((flex / total_flex * workspace_width).max(RESIZE_HANDLE_SIZE));
             } else {
                 // Opposite dock is fixed-width; flex items share (W - fixed).
-                let opposite_fixed = self.opposite_dock_fixed_width(position, window, cx);
+                let opposite_fixed = opposite_dock_size_state
+                    .and_then(|s| s.size)
+                    .unwrap_or_default();
                 let available = (workspace_width - opposite_fixed).max(RESIZE_HANDLE_SIZE);
-                return Some((grow / (grow + 1.0) * available).max(RESIZE_HANDLE_SIZE));
+                return Some((flex / (flex + 1.0) * available).max(RESIZE_HANDLE_SIZE));
             }
         }
 
@@ -2266,7 +2269,6 @@ impl Workspace {
         &self,
         position: DockPosition,
         size: Pixels,
-        window: &Window,
         cx: &App,
     ) -> Option<f32> {
         if position.axis() != Axis::Horizontal {
@@ -2278,11 +2280,14 @@ impl Workspace {
             return None;
         }
 
-        if let Some(opposite_flex) = self.opposite_dock_flex(position, window, cx) {
+        let opposite_dock_size_state = self.opposite_dock_size_state(position, cx);
+        if let Some(opposite_flex) = opposite_dock_size_state.and_then(|s| s.flex) {
             let size = size.clamp(px(0.), workspace_width - px(1.));
             Some((size * (1.0 + opposite_flex) / (workspace_width - size)).max(0.0))
         } else {
-            let opposite_width = self.opposite_dock_fixed_width(position, window, cx);
+            let opposite_width = opposite_dock_size_state
+                .and_then(|s| s.size)
+                .unwrap_or_default();
             let available = (workspace_width - opposite_width).max(RESIZE_HANDLE_SIZE);
             let remaining = (available - size).max(px(1.));
             Some((size / remaining).max(0.0))
@@ -2291,7 +2296,7 @@ impl Workspace {
 
     /// Returns the flex-grow value of the opposite dock if it is currently
     /// using flexible (flex) sizing, or 0.0 otherwise.
-    fn opposite_dock_flex(&self, position: DockPosition, window: &Window, cx: &App) -> Option<f32> {
+    fn opposite_dock_size_state(&self, position: DockPosition, cx: &App) -> Option<PanelSizeState> {
         let opposite_position = match position {
             DockPosition::Left => DockPosition::Right,
             DockPosition::Right => DockPosition::Left,
@@ -2300,39 +2305,7 @@ impl Workspace {
 
         let opposite_dock = self.dock_at_position(opposite_position).read(cx);
         let panel = opposite_dock.visible_panel()?;
-        let size_state = opposite_dock.stored_panel_size_state(panel.as_ref());
-
-        let is_flexible = size_state
-            .unwrap_or_default()
-            .is_flexible(panel.supports_flexible_size(window, cx));
-        if !is_flexible {
-            return None;
-        }
-
-        size_state
-            .and_then(|s| s.flex)
-            .or_else(|| self.default_dock_flex(opposite_position))
-            .map(|g| g.max(0.0))
-    }
-
-    /// Returns the fixed pixel width of the opposite dock, or zero if it
-    /// is closed.
-    fn opposite_dock_fixed_width(
-        &self,
-        position: DockPosition,
-        window: &Window,
-        cx: &App,
-    ) -> Pixels {
-        let opposite_position = match position {
-            DockPosition::Left => DockPosition::Right,
-            DockPosition::Right => DockPosition::Left,
-            DockPosition::Bottom => return Pixels::ZERO,
-        };
-
-        self.dock_at_position(opposite_position)
-            .read(cx)
-            .stored_active_panel_size(window, cx)
-            .unwrap_or(Pixels::ZERO)
+        opposite_dock.stored_panel_size_state(panel.as_ref())
     }
 
     pub fn default_dock_flex(&self, position: DockPosition) -> Option<f32> {
@@ -7470,7 +7443,7 @@ impl Workspace {
             }
         });
 
-        let flex_grow = self.dock_flex_for_size(DockPosition::Left, size, window, cx);
+        let flex_grow = self.dock_flex_for_size(DockPosition::Left, size, cx);
         self.left_dock.update(cx, |left_dock, cx| {
             if WorkspaceSettings::get_global(cx)
                 .resize_all_panels_in_dock
@@ -7494,7 +7467,7 @@ impl Workspace {
                 size = workspace_width - left_dock_size
             }
         });
-        let flex_grow = self.dock_flex_for_size(DockPosition::Right, size, window, cx);
+        let flex_grow = self.dock_flex_for_size(DockPosition::Right, size, cx);
         self.right_dock.update(cx, |right_dock, cx| {
             if WorkspaceSettings::get_global(cx)
                 .resize_all_panels_in_dock
