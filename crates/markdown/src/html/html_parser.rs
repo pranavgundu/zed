@@ -24,7 +24,7 @@ pub(crate) enum ParsedHtmlElement {
     List(ParsedHtmlList),
     Table(ParsedHtmlTable),
     BlockQuote(ParsedHtmlBlockQuote),
-    Paragraph(HtmlParagraph),
+    Paragraph(ParsedHtmlParagraph),
     Image(HtmlImage),
 }
 
@@ -35,7 +35,7 @@ impl ParsedHtmlElement {
             Self::List(list) => list.source_range.clone(),
             Self::Table(table) => table.source_range.clone(),
             Self::BlockQuote(block_quote) => block_quote.source_range.clone(),
-            Self::Paragraph(text) => match text.first()? {
+            Self::Paragraph(paragraph) => match paragraph.chunks.first()? {
                 HtmlParagraphChunk::Text(text) => text.source_range.clone(),
                 HtmlParagraphChunk::Image(image) => image.source_range.clone(),
             },
@@ -45,6 +45,13 @@ impl ParsedHtmlElement {
 }
 
 pub(crate) type HtmlParagraph = Vec<HtmlParagraphChunk>;
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
+pub(crate) struct ParsedHtmlParagraph {
+    pub chunks: HtmlParagraph,
+    pub alignment: Alignment,
+}
 
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -236,14 +243,15 @@ fn parse_html_node(
             consume_children(source_range, node, elements, context);
         }
         NodeData::Text { contents } => {
-            elements.push(ParsedHtmlElement::Paragraph(vec![
-                HtmlParagraphChunk::Text(ParsedHtmlText {
+            elements.push(ParsedHtmlElement::Paragraph(ParsedHtmlParagraph {
+                chunks: vec![HtmlParagraphChunk::Text(ParsedHtmlText {
                     source_range,
                     highlights: Vec::default(),
                     links: Vec::default(),
                     contents: contents.borrow().to_string().into(),
-                }),
-            ]));
+                })],
+                alignment: Alignment::None,
+            }));
         }
         NodeData::Comment { .. } => {}
         NodeData::Element { name, attrs, .. } => {
@@ -270,7 +278,10 @@ fn parse_html_node(
                 );
 
                 if !paragraph.is_empty() {
-                    elements.push(ParsedHtmlElement::Paragraph(paragraph));
+                    elements.push(ParsedHtmlElement::Paragraph(ParsedHtmlParagraph {
+                        chunks: paragraph,
+                        alignment: paragraph_alignment(attrs),
+                    }));
                 }
             } else if matches!(
                 name.local,
@@ -589,6 +600,27 @@ fn html_style_from_html_styles(styles: HashMap<String, String>) -> Option<HtmlHi
     }
 }
 
+fn paragraph_alignment(attrs: &RefCell<Vec<Attribute>>) -> Alignment {
+    if let Some(align) = attr_value(attrs, local_name!("align")) {
+        match align.to_lowercase().as_str() {
+            "left" => return Alignment::Left,
+            "center" => return Alignment::Center,
+            "right" => return Alignment::Right,
+            _ => {}
+        }
+    }
+    let styles = extract_styles_from_attributes(attrs);
+    if let Some(text_align) = styles.get("text-align") {
+        match text_align.to_lowercase().as_str() {
+            "left" => return Alignment::Left,
+            "center" => return Alignment::Center,
+            "right" => return Alignment::Right,
+            _ => {}
+        }
+    }
+    Alignment::None
+}
+
 fn extract_styles_from_attributes(attrs: &RefCell<Vec<Attribute>>) -> HashMap<String, String> {
     let mut styles = HashMap::new();
 
@@ -783,7 +815,7 @@ mod tests {
         let ParsedHtmlElement::Paragraph(paragraph) = &parsed.children[0] else {
             panic!("expected paragraph");
         };
-        let HtmlParagraphChunk::Text(text) = &paragraph[0] else {
+        let HtmlParagraphChunk::Text(text) = &paragraph.chunks[0] else {
             panic!("expected text chunk");
         };
 
@@ -851,7 +883,7 @@ mod tests {
         let ParsedHtmlElement::Paragraph(paragraph) = &first_item.content[0] else {
             panic!("expected first item paragraph");
         };
-        let HtmlParagraphChunk::Text(text) = &paragraph[0] else {
+        let HtmlParagraphChunk::Text(text) = &paragraph.chunks[0] else {
             panic!("expected first item text");
         };
         assert_eq!(text.contents.as_ref(), "parent");
@@ -866,7 +898,7 @@ mod tests {
         else {
             panic!("expected nested item paragraph");
         };
-        let HtmlParagraphChunk::Text(nested_text) = &nested_paragraph[0] else {
+        let HtmlParagraphChunk::Text(nested_text) = &nested_paragraph.chunks[0] else {
             panic!("expected nested item text");
         };
         assert_eq!(nested_text.contents.as_ref(), "child");
@@ -875,9 +907,41 @@ mod tests {
         let ParsedHtmlElement::Paragraph(second_paragraph) = &second_item.content[0] else {
             panic!("expected second item paragraph");
         };
-        let HtmlParagraphChunk::Text(second_text) = &second_paragraph[0] else {
+        let HtmlParagraphChunk::Text(second_text) = &second_paragraph.chunks[0] else {
             panic!("expected second item text");
         };
         assert_eq!(second_text.contents.as_ref(), "sibling");
+    }
+
+    #[test]
+    fn parses_html_paragraph_alignment() {
+        let parsed = parse_html_block(
+            "<p align=\"center\">centered</p>",
+            0..30,
+        )
+        .unwrap();
+
+        let ParsedHtmlElement::Paragraph(paragraph) = &parsed.children[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(paragraph.alignment, Alignment::Center);
+
+        let parsed = parse_html_block(
+            "<p style=\"text-align: right\">right</p>",
+            0..38,
+        )
+        .unwrap();
+
+        let ParsedHtmlElement::Paragraph(paragraph) = &parsed.children[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(paragraph.alignment, Alignment::Right);
+
+        let parsed = parse_html_block("<p>no alignment</p>", 0..19).unwrap();
+
+        let ParsedHtmlElement::Paragraph(paragraph) = &parsed.children[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(paragraph.alignment, Alignment::None);
     }
 }

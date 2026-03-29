@@ -79,8 +79,8 @@ impl MarkdownElement {
 
         match element {
             ParsedHtmlElement::Paragraph(paragraph) => {
-                self.push_markdown_paragraph(builder, &source_range, markdown_end);
-                self.render_html_paragraph(paragraph, source_allocator, builder, cx, markdown_end);
+                self.push_markdown_paragraph(builder, &source_range, markdown_end, paragraph.alignment);
+                self.render_html_paragraph(&paragraph.chunks, source_allocator, builder, cx, markdown_end);
                 builder.pop_div();
             }
             ParsedHtmlElement::Heading(heading) => {

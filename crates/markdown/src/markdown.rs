@@ -36,8 +36,8 @@ use gpui::{
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, Hitbox, Hsla, Image,
     ImageFormat, ImageSource, KeyContext, Length, MouseButton, MouseDownEvent, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Point, ScrollHandle, Stateful, StrikethroughStyle,
-    StyleRefinement, StyledText, Task, TextLayout, TextRun, TextStyle, TextStyleRefinement,
-    actions, img, point, quad,
+    StyleRefinement, StyledText, Task, TextAlign, TextLayout, TextRun, TextStyle,
+    TextStyleRefinement, actions, img, point, quad,
 };
 use language::{CharClassifier, Language, LanguageRegistry, Rope};
 use parser::CodeBlockMetadata;
@@ -931,11 +931,19 @@ impl MarkdownElement {
         builder: &mut MarkdownElementBuilder,
         range: &Range<usize>,
         markdown_end: usize,
+        alignment: Alignment,
     ) {
         builder.push_div(
-            div().when(!self.style.height_is_multiple_of_line_height, |el| {
-                el.mb_2().line_height(rems(1.3))
-            }),
+            div()
+                .when(!self.style.height_is_multiple_of_line_height, |el| {
+                    el.mb_2().line_height(rems(1.3))
+                })
+                .when(alignment == Alignment::Center, |el| {
+                    el.justify_center().text_align(TextAlign::Center)
+                })
+                .when(alignment == Alignment::Right, |el| {
+                    el.justify_end().text_align(TextAlign::Right)
+                }),
             range,
             markdown_end,
         );
@@ -1415,7 +1423,7 @@ impl Element for MarkdownElement {
                             }
                         }
                         MarkdownTag::Paragraph => {
-                            self.push_markdown_paragraph(&mut builder, range, markdown_end);
+                            self.push_markdown_paragraph(&mut builder, range, markdown_end, Alignment::None);
                         }
                         MarkdownTag::Heading { level, .. } => {
                             self.push_markdown_heading(&mut builder, *level, range, markdown_end);
