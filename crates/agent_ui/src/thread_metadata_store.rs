@@ -637,7 +637,7 @@ mod tests {
         ThreadMetadata {
             archived: false,
             session_id: acp::SessionId::new(session_id),
-            agent_id: AgentId::new("zed"),
+            agent_id: agent::ZED_AGENT_ID.clone(),
             title: title.to_string().into(),
             updated_at,
             created_at: Some(updated_at),
@@ -849,7 +849,7 @@ mod tests {
 
         let existing_metadata = ThreadMetadata {
             session_id: acp::SessionId::new("a-session-0"),
-            agent_id: AgentId::new("zed"),
+            agent_id: agent::ZED_AGENT_ID.clone(),
             title: "Existing Metadata".into(),
             updated_at: now - chrono::Duration::seconds(10),
             created_at: Some(now - chrono::Duration::seconds(10)),
@@ -922,7 +922,7 @@ mod tests {
         assert_eq!(list.len(), 3);
         assert!(
             list.iter()
-                .all(|metadata| metadata.agent_id.as_ref() == "zed")
+                .all(|metadata| metadata.agent_id.as_ref() == agent::ZED_AGENT_ID.as_ref())
         );
 
         let existing_metadata = list
@@ -966,7 +966,7 @@ mod tests {
 
         let existing_metadata = ThreadMetadata {
             session_id: acp::SessionId::new("existing-session"),
-            agent_id: AgentId::new("zed"),
+            agent_id: agent::ZED_AGENT_ID.clone(),
             title: "Existing Metadata".into(),
             updated_at: existing_updated_at,
             created_at: Some(existing_updated_at),
